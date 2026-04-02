@@ -80,7 +80,9 @@ export class ServerSettingsService extends ServiceMap.Service<
           getSettings: Ref.get(currentSettingsRef),
           updateSettings: (patch) =>
             Ref.get(currentSettingsRef).pipe(
-              Effect.map((currentSettings) => deepMerge(currentSettings, patch)),
+              Effect.map((currentSettings) =>
+                deepMerge(currentSettings, patch as DeepPartial<ServerSettings>),
+              ),
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
             ),
           streamChanges: Stream.empty,
@@ -314,7 +316,9 @@ const makeServerSettings = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const next = yield* Schema.decodeEffect(ServerSettings)(deepMerge(current, patch)).pipe(
+          const next = yield* Schema.decodeEffect(ServerSettings)(
+            deepMerge(current, patch as DeepPartial<ServerSettings>),
+          ).pipe(
             Effect.mapError(
               (cause) =>
                 new ServerSettingsError({

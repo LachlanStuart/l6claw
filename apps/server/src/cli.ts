@@ -244,15 +244,33 @@ export const resolveServerConfig = (
         () => mode === "desktop",
       ),
     );
-    const authToken = Option.getOrUndefined(
-      resolveOptionPrecedence(
-        flags.authToken,
-        Option.fromUndefinedOr(env.authToken),
-        Option.flatMap(bootstrapEnvelope, (bootstrap) =>
-          Option.fromUndefinedOr(bootstrap.authToken),
-        ),
+    const authTokenFromFlags = resolveOptionPrecedence(
+      flags.authToken,
+      Option.fromUndefinedOr(env.authToken),
+      Option.flatMap(bootstrapEnvelope, (bootstrap) =>
+        Option.fromUndefinedOr(bootstrap.authToken),
       ),
     );
+    // If no token from flags/env/bootstrap, try settings.json; if still nothing, auto-generate ephemeral token
+    const authToken: string = yield* Effect.gen(function* () {
+      if (Option.isSome(authTokenFromFlags)) {
+        return authTokenFromFlags.value;
+      }
+      const fromSettings = yield* fs.readFileString(derivedPaths.settingsPath).pipe(
+        Effect.map((raw) => {
+          try {
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            return typeof parsed.authToken === "string" ? parsed.authToken : undefined;
+          } catch {
+            return undefined;
+          }
+        }),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (fromSettings) return fromSettings;
+      const { randomBytes } = yield* Effect.promise(() => import("node:crypto"));
+      return randomBytes(32).toString("hex");
+    });
     const autoBootstrapProjectFromCwd = resolveBooleanFlag(
       flags.autoBootstrapProjectFromCwd,
       Option.getOrElse(

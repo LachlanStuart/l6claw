@@ -21,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { deepMerge } from "@t3tools/shared/Struct";
+import { deepMerge, type DeepPartial } from "@t3tools/shared/Struct";
 
 import {
   checkCodexProviderStatus,
@@ -110,7 +110,9 @@ function makeMutableServerSettingsService(
       updateSettings: (patch) =>
         Effect.gen(function* () {
           const current = yield* Ref.get(settingsRef);
-          const next = Schema.decodeSync(ServerSettings)(deepMerge(current, patch));
+          const next = Schema.decodeSync(ServerSettings)(
+            deepMerge(current, patch as DeepPartial<ServerSettings>),
+          );
           yield* Ref.set(settingsRef, next);
           yield* PubSub.publish(changes, next);
           return next;
