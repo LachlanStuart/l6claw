@@ -1413,91 +1413,84 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="API Access">
-        <div className="px-4 py-4 sm:px-5">
-          <div className="space-y-4">
-            <div>
-              <p className="text-xs text-muted-foreground">
-                Connection details for remote agents using l6claw-cli.
-              </p>
+        <SettingsRow
+          title="Endpoint URL"
+          description="Connection details for remote agents using l6claw-cli."
+          control={
+            <div className="flex items-center gap-2">
+              <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
+                {serverConfigQuery.data
+                  ? `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`
+                  : "Loading..."}
+              </code>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  if (!serverConfigQuery.data) return;
+                  void navigator.clipboard.writeText(
+                    `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`,
+                  );
+                }}
+              >
+                Copy
+              </Button>
             </div>
+          }
+        />
 
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <p className="text-xs text-muted-foreground">Endpoint URL</p>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 truncate rounded-md bg-muted px-3 py-1.5 text-xs">
-                    {serverConfigQuery.data
-                      ? `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`
-                      : "Loading..."}
-                  </code>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    onClick={() => {
-                      if (!serverConfigQuery.data) return;
-                      void navigator.clipboard.writeText(
-                        `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`,
-                      );
-                    }}
-                  >
-                    Copy
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <p className="text-xs text-muted-foreground">Auth Token</p>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
-                    {isTokenRevealed
-                      ? (serverConfigQuery.data?.authToken ?? "—")
-                      : "••••••••••••••••••••••••••••••••"}
-                  </code>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    onClick={() => setIsTokenRevealed((v) => !v)}
-                  >
-                    {isTokenRevealed ? "Hide" : "Reveal"}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(serverConfigQuery.data?.authToken ?? "");
-                    }}
-                  >
-                    Copy
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="persist-auth-token"
-                  className="size-3.5 rounded border-border accent-primary"
-                  checked={settings.authToken !== undefined}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      void updateSettings({
-                        authToken: serverConfigQuery.data?.authToken ?? undefined,
-                      });
-                    } else {
-                      void ensureNativeApi().server.updateSettings({ authToken: null });
-                    }
-                  }}
-                />
-                <label htmlFor="persist-auth-token" className="text-xs text-muted-foreground">
-                  Persist across restarts
-                </label>
-              </div>
+        <SettingsRow
+          title="Auth Token"
+          description="Secret token used to authenticate remote agent connections."
+          control={
+            <div className="flex items-center gap-2">
+              <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
+                {isTokenRevealed
+                  ? (serverConfigQuery.data?.authToken ?? "—")
+                  : "••••••••••••••••••••••••••••••••"}
+              </code>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => setIsTokenRevealed((v) => !v)}
+              >
+                {isTokenRevealed ? "Hide" : "Reveal"}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  void navigator.clipboard.writeText(serverConfigQuery.data?.authToken ?? "");
+                }}
+              >
+                Copy
+              </Button>
             </div>
-          </div>
-        </div>
+          }
+        />
+
+        <SettingsRow
+          title="Persist across restarts"
+          description="Save the auth token to disk so it is restored when the server restarts."
+          control={
+            <Switch
+              checked={settings.authToken !== undefined}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  void updateSettings({
+                    authToken: serverConfigQuery.data?.authToken ?? undefined,
+                  });
+                } else {
+                  void ensureNativeApi().server.updateSettings({ authToken: null });
+                }
+              }}
+              aria-label="Persist auth token across restarts"
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="Advanced">
