@@ -316,9 +316,13 @@ const makeServerSettings = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const next = yield* Schema.decodeEffect(ServerSettings)(
-            deepMerge(current, patch as DeepPartial<ServerSettings>),
-          ).pipe(
+          const merged = deepMerge(current, patch as DeepPartial<ServerSettings>);
+          // Normalize authToken: null → undefined (null is the "remove" signal in the patch)
+          const normalized = {
+            ...merged,
+            authToken: merged.authToken ?? undefined,
+          };
+          const next = yield* Schema.decodeEffect(ServerSettings)(normalized).pipe(
             Effect.mapError(
               (cause) =>
                 new ServerSettingsError({

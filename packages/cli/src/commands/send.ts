@@ -72,6 +72,10 @@ function resolveThread(
       console.error(`Thread not found: ${opts.threadId}`);
       process.exit(1);
     }
+    if (found.deletedAt || found.archivedAt) {
+      console.error(`Thread is archived or deleted: ${opts.threadId}`);
+      process.exit(1);
+    }
     if (found.session?.activeTurnId) {
       console.error("Thread has an active turn in progress");
       process.exit(1);
@@ -117,7 +121,7 @@ function resolveThread(
 
 // ── Wait mode ────────────────────────────────────────────────────────────
 
-type TurnStatus = "running" | "completed" | "error" | "interrupted";
+type TurnStatus = "running" | "completed" | "error" | "interrupted" | "timeout";
 
 function waitForTurn(
   pushEvents: Queue.Dequeue<WsPush>,
@@ -187,7 +191,7 @@ function waitForTurn(
     );
 
     return {
-      status: timedOut === "__timeout__" ? ("timeout" as unknown as TurnStatus) : status,
+      status: timedOut === "__timeout__" ? "timeout" : status,
       turnId,
       messages,
     };
