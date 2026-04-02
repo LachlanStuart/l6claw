@@ -809,6 +809,7 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
             ? { attachments: event.payload.attachments }
             : {}),
           turnId: event.payload.turnId,
+          sender: event.payload.sender,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,

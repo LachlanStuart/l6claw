@@ -118,6 +118,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
             role: "user",
             text: "hello",
             turnId: null,
+            sender: null,
             streaming: false,
             createdAt: NOW_ISO,
             updatedAt: NOW_ISO,
