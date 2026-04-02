@@ -121,6 +121,22 @@
         "vitest-browser-react": "^2.0.5",
       },
     },
+    "packages/cli": {
+      "name": "@t3tools/cli",
+      "version": "0.0.1",
+      "bin": {
+        "l6claw-cli": "./dist/l6claw-cli",
+      },
+      "dependencies": {
+        "@effect/platform-node": "catalog:",
+        "@t3tools/contracts": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/contracts": {
       "name": "@t3tools/contracts",
       "version": "0.0.15",
@@ -169,6 +185,7 @@
     },
   },
   "trustedDependencies": [
+    "electron",
     "node-pty",
   ],
   "overrides": {
@@ -658,6 +675,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
+
+    "@t3tools/cli": ["@t3tools/cli@workspace:packages/cli"],
 
     "@t3tools/contracts": ["@t3tools/contracts@workspace:packages/contracts"],
 

@@ -1,0 +1,22 @@
+{
+  "name": "@t3tools/cli",
+  "version": "0.0.1",
+  "bin": {
+    "l6claw-cli": "./dist/l6claw-cli"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
+    "dev": "bun run src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}
