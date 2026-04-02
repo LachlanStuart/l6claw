@@ -120,6 +120,7 @@ function mapMessage(message: OrchestrationMessage): ChatMessage {
     role: message.role,
     text: message.text,
     turnId: message.turnId,
+    sender: message.sender ?? null,
     createdAt: message.createdAt,
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),

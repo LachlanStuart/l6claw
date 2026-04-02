@@ -426,6 +426,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     )}
                   </div>
                   <p className="text-right text-[10px] text-muted-foreground/30">
+                    {row.message.sender && (
+                      <span className="text-primary/40">{row.message.sender} · </span>
+                    )}
                     {formatTimestamp(row.message.createdAt, timestampFormat)}
                   </p>
                 </div>
