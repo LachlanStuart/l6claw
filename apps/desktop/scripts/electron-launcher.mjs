@@ -17,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
-const APP_DISPLAY_NAME = isDevelopment ? "L6 Claw (Dev)" : "L6 Claw (Alpha)";
+const APP_DISPLAY_NAME = isDevelopment ? "L6 Claw (Dev)" : "L6 Claw";
 const APP_BUNDLE_ID = "com.t3tools.t3code";
 const LAUNCHER_VERSION = 1;
 
