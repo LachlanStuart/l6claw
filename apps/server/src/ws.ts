@@ -72,6 +72,9 @@ const WsRpcLayer = WsRpcGroup.toLayer(
         issues: keybindingsConfig.issues,
         providers,
         availableEditors: resolveAvailableEditors(),
+        host: config.host,
+        port: config.port,
+        authToken: config.authToken,
         observability: {
           logsDirectoryPath: config.logsDir,
           localTracingEnabled: true,

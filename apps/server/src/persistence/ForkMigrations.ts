@@ -12,11 +12,12 @@
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
 
+import ForkMigration0001 from "./ForkMigrations/001_ProjectionThreadMessageSender.ts";
+
 const FORK_MIGRATIONS_TABLE = "effect_sql_fork_migrations";
 
 // Fork migrations are registered here. Add new entries at the end.
-const forkMigrationEntries: readonly (readonly [number, string, Effect.Effect<unknown>])[] =
-  [] as const;
+const forkMigrationEntries = [[1, "ProjectionThreadMessageSender", ForkMigration0001]] as const;
 
 export const makeForkMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
@@ -31,7 +32,6 @@ const run = Migrator.make({});
 
 export const runForkMigrations = () =>
   Effect.gen(function* () {
-    if (forkMigrationEntries.length === 0) return [];
     yield* Effect.log("Running fork migrations...");
     const executedMigrations = yield* run({
       loader: makeForkMigrationLoader(),

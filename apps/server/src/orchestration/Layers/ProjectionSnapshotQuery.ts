@@ -220,6 +220,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          sender,
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -550,6 +551,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               text: row.text,
               ...(row.attachments !== null ? { attachments: row.attachments } : {}),
               turnId: row.turnId,
+              sender: row.sender,
               streaming: row.isStreaming === 1,
               createdAt: row.createdAt,
               updatedAt: row.updatedAt,

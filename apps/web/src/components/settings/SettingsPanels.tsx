@@ -60,6 +60,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   useServerAvailableEditors,
+  useServerConfig,
   useServerKeybindingsConfigPath,
   useServerObservability,
   useServerProviders,
@@ -548,6 +549,8 @@ export function GeneralSettingsPanel() {
     Partial<Record<ProviderKind, string | null>>
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [isTokenRevealed, setIsTokenRevealed] = useState(false);
+  const serverConfig = useServerConfig();
   const refreshingRef = useRef(false);
   const modelListRefs = useRef<Partial<Record<ProviderKind, HTMLDivElement | null>>>({});
   const refreshProviders = useCallback(() => {
@@ -1409,6 +1412,87 @@ export function GeneralSettingsPanel() {
             </div>
           );
         })}
+      </SettingsSection>
+
+      <SettingsSection title="API Access">
+        <SettingsRow
+          title="Endpoint URL"
+          description="Connection details for remote agents using l6claw-cli."
+          control={
+            <div className="flex items-center gap-2">
+              <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
+                {serverConfig
+                  ? `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`
+                  : "Loading..."}
+              </code>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  if (!serverConfig) return;
+                  void navigator.clipboard.writeText(
+                    `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`,
+                  );
+                }}
+              >
+                Copy
+              </Button>
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Auth Token"
+          description="Secret token used to authenticate remote agent connections."
+          control={
+            <div className="flex items-center gap-2">
+              <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
+                {isTokenRevealed
+                  ? (serverConfig?.authToken ?? "—")
+                  : "••••••••••••••••••••••••••••••••"}
+              </code>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => setIsTokenRevealed((v) => !v)}
+              >
+                {isTokenRevealed ? "Hide" : "Reveal"}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  void navigator.clipboard.writeText(serverConfig?.authToken ?? "");
+                }}
+              >
+                Copy
+              </Button>
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Persist across restarts"
+          description="Save the auth token to disk so it is restored when the server restarts."
+          control={
+            <Switch
+              checked={settings.authToken !== undefined}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  void updateSettings({
+                    authToken: serverConfig?.authToken ?? undefined,
+                  });
+                } else {
+                  void ensureNativeApi().server.updateSettings({ authToken: null });
+                }
+              }}
+              aria-label="Persist auth token across restarts"
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="Advanced">

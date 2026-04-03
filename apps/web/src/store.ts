@@ -120,6 +120,7 @@ function mapMessage(message: OrchestrationMessage): ChatMessage {
     role: message.role,
     text: message.text,
     turnId: message.turnId,
+    sender: message.sender ?? null,
     createdAt: message.createdAt,
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
@@ -809,6 +810,7 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
             ? { attachments: event.payload.attachments }
             : {}),
           turnId: event.payload.turnId,
+          sender: event.payload.sender,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
