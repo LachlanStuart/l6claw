@@ -1,7 +1,51 @@
 # L6 Remote CLI Spec
 
 **Date:** 2026-04-02
-**Status:** Draft
+**Status:** Implemented
+
+## Re-implementation Notes
+
+If this feature needs to be re-implemented (e.g. after rebasing onto a new upstream), a reference diff is available at `.l6-specs/l6-remote-cli.diff`. This diff shows the changes made during the original implementation and is intended as **guidance for locating relevant areas of the codebase** — not as a precise patch to apply. File line numbers and exact code will likely differ after an upstream merge, but the diff makes it clear which files were touched and what shape the changes took.
+
+---
+
+## Quick Start (for CLI users)
+
+Set your connection details once as environment variables — this avoids repeating them on every call:
+
+```bash
+export T3CODE_URL=ws://100.x.y.z:3773   # Tailnet IP of the T3 Code host
+export T3CODE_TOKEN=<token>              # From Settings → API Access in the T3 Code UI
+```
+
+**List all threads:**
+```bash
+l6claw-cli threads              # Human-readable table
+l6claw-cli threads --json       # Machine-readable JSON array
+```
+
+**Send a message (fire and forget):**
+```bash
+l6claw-cli send \
+  --project "my-project" --thread "Fix the login bug" \
+  --text "Run the test suite and report results." \
+  --sender "Build Server"
+```
+
+**Send a message and wait for the agent's response:**
+```bash
+l6claw-cli send \
+  --thread-id abc123-def4-5678-9012-abcdef345678 \
+  --text "What is the status of the refactor?" \
+  --sender "Orchestrator" \
+  --wait
+```
+
+The `--wait` flag blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
+
+Run `l6claw-cli --help` or `l6claw-cli <command> --help` for full flag documentation.
+
+---
 
 ## Overview
 
@@ -11,13 +55,13 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 
 ## Terminology
 
-| Term | Definition |
-|------|-----------|
-| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads. |
-| **Thread** | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses. |
-| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI. |
-| **Turn** | A single user-message-to-agent-response cycle. A turn is triggered by sending a message. |
-| **Sender** | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the T3 Code web interface. |
+| Term        | Definition                                                                                                                                                |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads.                                                                        |
+| **Thread**  | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses.            |
+| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI.                                           |
+| **Turn**    | A single user-message-to-agent-response cycle. A turn is triggered by sending a message.                                                                  |
+| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the T3 Code web interface. |
 
 ---
 
@@ -31,10 +75,10 @@ l6claw-cli
 
 ### Global Options
 
-| Flag | Env Var | Required | Description |
-|------|---------|----------|-------------|
-| `--url <url>` | `T3CODE_URL` | Yes | WebSocket URL of the T3 Code server (e.g. `ws://100.64.1.2:3773`) |
-| `--token <string>` | `T3CODE_TOKEN` | Yes | Auth token for the WebSocket connection |
+| Flag               | Env Var        | Required | Description                                                       |
+| ------------------ | -------------- | -------- | ----------------------------------------------------------------- |
+| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the T3 Code server (e.g. `ws://100.64.1.2:3773`) |
+| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                           |
 
 Flag values take precedence over environment variables.
 
@@ -48,8 +92,8 @@ l6claw-cli threads [--json]
 
 **Options:**
 
-| Flag | Default | Description |
-|------|---------|-------------|
+| Flag     | Default | Description                           |
+| -------- | ------- | ------------------------------------- |
 | `--json` | `false` | Output as JSON array instead of table |
 
 **Table output format:**
@@ -62,6 +106,7 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 ```
 
 **Table output rules:**
+
 - Thread titles are truncated to 60 characters with `...` suffix if they exceed that length
 - Archived threads (where `archivedAt` is non-null) are excluded
 - Deleted threads (where `deletedAt` is non-null) are excluded
@@ -81,6 +126,7 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 ```
 
 **JSON output rules:**
+
 - Thread titles are NOT truncated in JSON output (full title is included)
 - Same exclusion rules as table output (no archived, no deleted)
 - Array is sorted by project name (ascending), then thread title (ascending)
@@ -98,34 +144,38 @@ l6claw-cli send --project <name> --thread <name> --text <message> --sender <name
 
 **Options:**
 
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--thread-id <id>` | One of `--thread-id` or (`--project` + `--thread`) required | | Target thread by ID |
-| `--project <name>` | See above | | Target project by name (case-insensitive match) |
-| `--thread <name>` | See above | | Target thread by title (case-insensitive match, must pair with `--project`) |
-| `--text <message>` | Yes | | Message text to send |
-| `--sender <name>` | Yes | | Sender identity displayed in the UI (max 32 characters) |
-| `--wait` | No | `false` | Block until the agent finishes responding |
-| `--timeout <seconds>` | No | `86400` (24 hours) | Maximum wait time in seconds (only applies when `--wait` is set) |
+| Flag                  | Required                                                    | Default            | Description                                                                 |
+| --------------------- | ----------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------- |
+| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                         |
+| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                             |
+| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`) |
+| `--text <message>`    | Yes                                                         |                    | Message text to send                                                        |
+| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                     |
+| `--wait`              | No                                                          | `false`            | Block until the agent finishes responding                                   |
+| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds (only applies when `--wait` is set)            |
 
 **Thread resolution:**
 
 Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI always fetches `orchestration.getSnapshot` first to:
+
 1. Validate the thread exists
 2. Read the thread's current `runtimeMode` (echoed back in the command to avoid changing it)
 3. Check the thread does not already have an active turn running
 
 **When using `--project` + `--thread`:**
+
 1. Find the project where `project.title` matches `--project` (case-insensitive)
 2. Find the thread where `thread.title` matches `--thread` (case-insensitive) within that project
 3. If zero matches: exit 1 with error message
 4. If multiple matches: exit 1 with error listing the ambiguous matches
 
 **When using `--thread-id`:**
+
 1. Find the thread where `thread.id` matches `--thread-id`
 2. If not found: exit 1 with error message
 
 **Pre-send validation:**
+
 - If the resolved thread has `session.activeTurnId !== null` (a turn is already running): exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
 
 **Fire-and-forget mode (no `--wait`):**
@@ -133,7 +183,7 @@ Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI a
 Dispatches the command and prints acknowledgment to stdout:
 
 ```json
-{"status": "accepted", "turnId": null}
+{ "status": "accepted", "turnId": null }
 ```
 
 Note: `turnId` is null because turn IDs are assigned asynchronously by the provider adapter, not at command dispatch time. Exit code 0.
@@ -183,12 +233,12 @@ Add `sender` to `OrchestrationMessage`:
 
 ```typescript
 // New field on OrchestrationMessage schema
-sender: Schema.NullOr(Schema.String)  // null for UI-sent messages
+sender: Schema.NullOr(Schema.String); // null for UI-sent messages
 ```
 
-| Field | Type | Default | Constraint |
-|-------|------|---------|------------|
-| `sender` | `string \| null` | `null` | Max 32 characters, truncated server-side if exceeded |
+| Field    | Type             | Default | Constraint                                           |
+| -------- | ---------------- | ------- | ---------------------------------------------------- |
+| `sender` | `string \| null` | `null`  | Max 32 characters, truncated server-side if exceeded |
 
 **Propagation path:**
 
@@ -207,16 +257,16 @@ Messages sent from the T3 Code web UI omit the `sender` field (or send null), so
 
 ```typescript
 // New field on ServerSettings
-authToken: Schema.optional(Schema.String)
+authToken: Schema.optional(Schema.String);
 ```
 
 **Token lifecycle:**
 
-| Priority | Source | Persistence |
-|----------|--------|-------------|
-| 1 (highest) | `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag | Never persisted (runtime only) |
-| 2 | `authToken` field in `settings.json` | Persisted (user opted in) |
-| 3 (lowest) | Auto-generated on startup | In-memory only (ephemeral, changes each restart) |
+| Priority    | Source                                                 | Persistence                                      |
+| ----------- | ------------------------------------------------------ | ------------------------------------------------ |
+| 1 (highest) | `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag | Never persisted (runtime only)                   |
+| 2           | `authToken` field in `settings.json`                   | Persisted (user opted in)                        |
+| 3 (lowest)  | Auto-generated on startup                              | In-memory only (ephemeral, changes each restart) |
 
 **Auto-generation:** On startup, if no token is available from priorities 1 or 2, generate a cryptographically random 32-byte hex string and hold it in memory for the session.
 
@@ -233,6 +283,7 @@ authToken: Schema.optional(Schema.String)
 **Rendering rule:** If `message.sender` is non-null and `message.role` is `"user"`, display the sender name inline, immediately to the left of the timestamp.
 
 **Styling:**
+
 - No border, no background, no pill/badge
 - Muted accent colour (distinct from the timestamp colour but similarly understated)
 - Same font size and weight as the timestamp
@@ -246,11 +297,11 @@ authToken: Schema.optional(Schema.String)
 
 **Contents:**
 
-| Element | Description |
-|---------|-------------|
-| **Endpoint URL** | Read-only text showing `ws://<host>:<port>` computed from the server's actual bind address and port |
-| **Auth Token** | Read-only text field, masked by default, with reveal and copy buttons |
-| **Persist checkbox** | "Persist across restarts" — toggles whether the token is saved to `settings.json` |
+| Element              | Description                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------------- |
+| **Endpoint URL**     | Read-only text showing `ws://<host>:<port>` computed from the server's actual bind address and port |
+| **Auth Token**       | Read-only text field, masked by default, with reveal and copy buttons                               |
+| **Persist checkbox** | "Persist across restarts" — toggles whether the token is saved to `settings.json`                   |
 
 The token field is always read-only in the UI. To use a custom token, set it via the `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag.
 
@@ -310,6 +361,7 @@ Exactly one of `result` or `error` is present.
 Returns the full `OrchestrationReadModel` containing all projects and threads.
 
 **Request:**
+
 ```json
 {
   "id": "...",
@@ -324,6 +376,7 @@ Returns the full `OrchestrationReadModel` containing all projects and threads.
 Dispatches an orchestration command. The CLI uses this with `thread.turn.start` commands.
 
 **Request:**
+
 ```json
 {
   "id": "...",
@@ -371,15 +424,16 @@ After dispatching the command, the CLI filters push events where `channel === "o
 
 **Relevant event types and their payloads:**
 
-| Event Type | Key Payload Fields | Meaning |
-|-----------|-------------------|---------|
-| `thread.message-sent` | `threadId`, `messageId`, `role`, `text`, `turnId`, `streaming` | A message was sent. `role: "assistant"` + `streaming: false` = final assistant text. |
-| `thread.session-set` | `threadId`, `session.status`, `session.activeTurnId` | Session state changed. `activeTurnId: null` after being non-null = turn ended. |
-| `thread.turn-diff-completed` | `threadId`, `turnId`, `completedAt`, `status` | Turn checkpoint complete. `status: "ready"` = success, `"error"` = error, `"missing"` = interrupted. |
+| Event Type                   | Key Payload Fields                                             | Meaning                                                                                              |
+| ---------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `thread.message-sent`        | `threadId`, `messageId`, `role`, `text`, `turnId`, `streaming` | A message was sent. `role: "assistant"` + `streaming: false` = final assistant text.                 |
+| `thread.session-set`         | `threadId`, `session.status`, `session.activeTurnId`           | Session state changed. `activeTurnId: null` after being non-null = turn ended.                       |
+| `thread.turn-diff-completed` | `threadId`, `turnId`, `completedAt`, `status`                  | Turn checkpoint complete. `status: "ready"` = success, `"error"` = error, `"missing"` = interrupted. |
 
 **Assistant message collection:**
 
 During wait mode, the CLI accumulates text from `thread.message-sent` events where:
+
 - `aggregateId` matches the target `threadId`
 - `payload.role === "assistant"`
 - `payload.streaming === false` (only final/complete messages, not streaming fragments)
@@ -436,8 +490,8 @@ packages/cli/
 }
 ```
 
-| Field | Type | Presence | Description |
-|-------|------|----------|-------------|
+| Field       | Type     | Presence                                               | Description                                                                                                     |
+| ----------- | -------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `authToken` | `string` | Optional — only present when user has opted to persist | The auth token for WebSocket connections. When absent, the server generates an ephemeral token on each startup. |
 
 This field is added or removed by the UI "Persist across restarts" checkbox. It is never auto-written by the server.
@@ -446,11 +500,11 @@ This field is added or removed by the UI "Persist across restarts" checkbox. It 
 
 The following existing configuration options are relevant but require no changes:
 
-| Config | Source | Default | Description |
-|--------|--------|---------|-------------|
-| `T3CODE_PORT` / `--port` | Env var / CLI flag | `3773` | Server port |
-| `T3CODE_HOST` / `--host` | Env var / CLI flag | `undefined` (all interfaces in web mode, `127.0.0.1` in desktop mode) | Bind address |
-| `T3CODE_AUTH_TOKEN` / `--auth-token` | Env var / CLI flag | None | Auth token override (takes precedence over persisted token) |
+| Config                               | Source             | Default                                                               | Description                                                 |
+| ------------------------------------ | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `T3CODE_PORT` / `--port`             | Env var / CLI flag | `3773`                                                                | Server port                                                 |
+| `T3CODE_HOST` / `--host`             | Env var / CLI flag | `undefined` (all interfaces in web mode, `127.0.0.1` in desktop mode) | Bind address                                                |
+| `T3CODE_AUTH_TOKEN` / `--auth-token` | Env var / CLI flag | None                                                                  | Auth token override (takes precedence over persisted token) |
 
 ---
 
@@ -460,24 +514,24 @@ The CLI is a **security boundary** that exposes only safe operations to remote a
 
 ### Allowed Operations
 
-| Operation | RPC Method | Risk |
-|-----------|-----------|------|
-| List threads (read-only) | `orchestration.getSnapshot` | None — read-only snapshot of project/thread metadata and messages |
-| Send user message | `orchestration.dispatchCommand` (`thread.turn.start`) | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
+| Operation                | RPC Method                                            | Risk                                                                                                                              |
+| ------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| List threads (read-only) | `orchestration.getSnapshot`                           | None — read-only snapshot of project/thread metadata and messages                                                                 |
+| Send user message        | `orchestration.dispatchCommand` (`thread.turn.start`) | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
 
 ### Explicitly Disallowed Operations
 
 The CLI does not expose and must not be extended to expose:
 
-| Operation | Why Disallowed |
-|-----------|---------------|
-| Approve/decline tool execution | Remote agent must not be able to bypass human approval gates |
-| Change runtime mode | Remote agent must not escalate a thread from `approval-required` to `full-access` |
-| Delete/archive threads | Destructive operation, local user only |
-| Modify settings | Server configuration is local user only |
-| Create/delete projects | Workspace management is local user only |
-| Write files | Direct filesystem access is local user only |
-| Terminal access | Shell access is local user only |
+| Operation                      | Why Disallowed                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| Approve/decline tool execution | Remote agent must not be able to bypass human approval gates                      |
+| Change runtime mode            | Remote agent must not escalate a thread from `approval-required` to `full-access` |
+| Delete/archive threads         | Destructive operation, local user only                                            |
+| Modify settings                | Server configuration is local user only                                           |
+| Create/delete projects         | Workspace management is local user only                                           |
+| Write files                    | Direct filesystem access is local user only                                       |
+| Terminal access                | Shell access is local user only                                                   |
 
 ### Trust Model
 
@@ -492,10 +546,10 @@ The CLI does not expose and must not be extended to expose:
 
 ### CLI Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Error (connection failure, auth failure, timeout, command rejected, thread not found, ambiguous match) |
+| Code | Meaning                                                                                                |
+| ---- | ------------------------------------------------------------------------------------------------------ |
+| 0    | Success                                                                                                |
+| 1    | Error (connection failure, auth failure, timeout, command rejected, thread not found, ambiguous match) |
 
 ### Error Output
 
@@ -503,20 +557,20 @@ All errors are printed to stderr as human-readable messages. In `--wait` mode, s
 
 ### Connection Errors
 
-| Scenario | Behavior |
-|----------|----------|
-| Server unreachable | Exit 1 with "Connection failed: <url>" |
-| Auth rejected (401) | Exit 1 with "Authentication failed: invalid token" |
+| Scenario                    | Behavior                                                            |
+| --------------------------- | ------------------------------------------------------------------- |
+| Server unreachable          | Exit 1 with "Connection failed: <url>"                              |
+| Auth rejected (401)         | Exit 1 with "Authentication failed: invalid token"                  |
 | Connection lost during wait | Exit 1 with partial output + `{"status": "error", "turnId": "..."}` |
 
 ### Send Errors
 
-| Scenario | Behavior |
-|----------|----------|
-| Thread not found | Exit 1 with "Thread not found: <id or name>" |
-| Ambiguous name match | Exit 1 with "Multiple threads match: <list>" |
-| Thread has active turn | Exit 1 with "Thread has an active turn in progress" |
-| Command rejected by server | Exit 1 with server error message |
+| Scenario                   | Behavior                                            |
+| -------------------------- | --------------------------------------------------- |
+| Thread not found           | Exit 1 with "Thread not found: <id or name>"        |
+| Ambiguous name match       | Exit 1 with "Multiple threads match: <list>"        |
+| Thread has active turn     | Exit 1 with "Thread has an active turn in progress" |
+| Command rejected by server | Exit 1 with server error message                    |
 
 ---
 
