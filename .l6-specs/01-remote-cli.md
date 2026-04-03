@@ -274,9 +274,13 @@ The token field is always read-only in the UI. To use a custom token, set it via
 
 When L6 Claw runs as the desktop app, the embedded server must follow the same stable port selection rules as the standalone server instead of reserving a fresh ephemeral port on each launch.
 
+- If `T3CODE_HOST` is set, the desktop app must bind the embedded server to that host/interface.
+- If `T3CODE_HOST` is unset, the desktop app must use the normal desktop default host `127.0.0.1`.
 - If `T3CODE_PORT` is set, the desktop app must bind the embedded server to that port.
 - If `T3CODE_PORT` is unset, the desktop app must use the normal desktop default port `3773`.
-- Restarting the desktop app must not change the port unless the configured value changes.
+- Restarting the desktop app must not change the host or port unless the configured values change.
+
+This host override must work when the desktop app is launched through the normal project task runner (`bun run start:desktop`), not only when Electron is started directly.
 
 This requirement exists so local helper processes and external automation can reconnect to the desktop-hosted WebSocket endpoint without rediscovering a new port after every restart.
 
