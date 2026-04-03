@@ -75,7 +75,7 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 l6claw-cli
 ```
 
-Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses `@effect/cli` for command/option parsing, consistent with the rest of the codebase.
+Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses a minimal hand-rolled argv parser for subcommand/flag parsing (the Effect CLI beta has broken subcommand dispatch).
 
 ### Global Options
 
@@ -88,11 +88,13 @@ Flag values take precedence over environment variables.
 
 ### Connection
 
-The CLI connects via WebSocket with the auth token as a query parameter:
+The CLI connects via WebSocket to the server's `/ws` path using the Effect RPC protocol (JSON serialization over WebSocket), with the auth token as a query parameter:
 
 ```
-ws://<host>:<port>/?token=<auth-token>
+ws://<host>:<port>/ws?token=<auth-token>
 ```
+
+The CLI uses `RpcClient.layerProtocolSocket` with `RpcSerialization.layerJson` and `NodeSocket.layerWebSocket` — the same Effect RPC protocol used by the web app. This means the CLI calls typed RPC methods directly (e.g. `client[ORCHESTRATION_WS_METHODS.getSnapshot]({})`) rather than using a custom wire format.
 
 If the token is invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
 
@@ -209,7 +211,9 @@ Dispatches the command, subscribes to server push events, and blocks until the t
 - **Timeout:** prints any assistant text collected so far to stdout, prints to stderr as `{"status": "timeout", "turnId": "<id>"}`, exit code 1
 - **Interrupted:** same pattern, stderr `{"status": "interrupted", "turnId": "<id>"}`, exit code 1
 
-The CLI must subscribe to push events **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
+The CLI subscribes to the `subscribeOrchestrationDomainEvents` RPC stream **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
+
+**Streaming message accumulation:** Assistant messages arrive as multiple `thread.message-sent` domain events with `streaming: true` (each carrying a text delta/chunk), followed by a final event with `streaming: false` (with empty text). The CLI accumulates streaming chunks per `messageId` and finalizes the complete message text when the `streaming: false` event arrives.
 
 **Security constraint:** The `runtimeMode` is always echoed from the thread's current state — the CLI never changes it. The `interactionMode` is always set to `"default"`. This ensures the CLI cannot escalate a thread's permissions.
 

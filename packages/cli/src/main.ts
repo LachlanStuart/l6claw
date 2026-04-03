@@ -1,23 +1,62 @@
 import { Effect } from "effect";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Command } from "effect/unstable/cli";
-import { threadsCommand } from "./commands/threads";
-import { sendCommand } from "./commands/send";
+import { runThreads } from "./commands/threads";
+import { runSend } from "./commands/send";
 
-const cli = Command.make("l6claw-cli", {}).pipe(
-  Command.withDescription("Remote CLI for T3 Code"),
-  Command.withSubcommands([threadsCommand, sendCommand]),
-  Command.withHandler(() =>
-    Effect.sync(() => {
-      console.error("No command specified. Use --help.");
-      process.exit(1);
-    }),
-  ),
-);
+// ---------------------------------------------------------------------------
+// Minimal arg parser — replaces Effect CLI which has broken subcommand
+// dispatch in the current beta.
+// ---------------------------------------------------------------------------
 
-Command.run(cli, { version: "0.0.1" }).pipe(
-  Effect.scoped,
-  Effect.provide(NodeServices.layer),
-  NodeRuntime.runMain,
-);
+function parseFlags(argv: string[]): Record<string, string | true> {
+  const result: Record<string, string | true> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        result[key] = next;
+        i++;
+      } else {
+        result[key] = true;
+      }
+    }
+  }
+  return result;
+}
+
+function printUsage(): never {
+  console.error("Usage: l6claw-cli <command> [options]");
+  console.error("");
+  console.error("Commands:");
+  console.error("  threads   List all threads across all projects");
+  console.error("  send      Send a message to a thread");
+  console.error("");
+  console.error("Run l6claw-cli <command> --help for command-specific options.");
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+
+const subcommand = process.argv[2];
+const flags = parseFlags(process.argv.slice(3));
+
+if (subcommand === "--help" || subcommand === "-h" || subcommand === undefined) {
+  printUsage();
+}
+
+const program = (() => {
+  switch (subcommand) {
+    case "threads":
+      return runThreads(flags);
+    case "send":
+      return runSend(flags);
+    default:
+      console.error(`Unknown command: ${subcommand}`);
+      printUsage();
+  }
+})();
+
+program.pipe(Effect.scoped, Effect.provide(NodeServices.layer), NodeRuntime.runMain);

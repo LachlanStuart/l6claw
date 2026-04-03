@@ -1,70 +1,30 @@
-import { Cause, Duration, Effect, Fiber, Option, Queue } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
-import { connect, WsConnectionError } from "../ws/client";
-import type { WsPush } from "../ws/protocol";
+import { Cause, Deferred, Duration, Effect, Fiber, Ref, Stream } from "effect";
+import { RpcClient } from "effect/unstable/rpc";
+import {
+  CommandId,
+  MessageId,
+  ORCHESTRATION_WS_METHODS,
+  WS_METHODS,
+  WsRpcGroup,
+} from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
+import { makeRpcLayer } from "../ws/client";
 
-// ── Flags ────────────────────────────────────────────────────────────────
+// ── Thread resolution ───────────────────────────────────────────────────
 
-const urlFlag = Flag.string("url").pipe(
-  Flag.withDescription("WebSocket URL. Overrides T3CODE_URL."),
-  Flag.optional,
-);
-const tokenFlag = Flag.string("token").pipe(
-  Flag.withDescription("Auth token. Overrides T3CODE_TOKEN."),
-  Flag.optional,
-);
-const threadIdFlag = Flag.string("thread-id").pipe(
-  Flag.withDescription("Target thread by ID."),
-  Flag.optional,
-);
-const projectFlag = Flag.string("project").pipe(
-  Flag.withDescription("Target project by name (case-insensitive)."),
-  Flag.optional,
-);
-const threadFlag = Flag.string("thread").pipe(
-  Flag.withDescription("Target thread title (case-insensitive, requires --project)."),
-  Flag.optional,
-);
-const textFlag = Flag.string("text").pipe(Flag.withDescription("Message text to send."));
-const senderFlag = Flag.string("sender").pipe(
-  Flag.withDescription("Sender identity shown in the UI (max 32 chars)."),
-);
-const waitFlag = Flag.boolean("wait").pipe(
-  Flag.withDescription("Block until agent finishes responding."),
-  Flag.optional,
-);
-const timeoutFlag = Flag.integer("timeout").pipe(
-  Flag.withDescription("Max wait time in seconds (default: 86400, --wait only)."),
-  Flag.optional,
-);
-
-// ── Thread resolution types ──────────────────────────────────────────────
-
-interface SnapshotProject {
-  id: string;
-  title: string;
-}
-interface SnapshotThread {
-  id: string;
-  projectId: string;
-  title: string;
-  runtimeMode: string;
-  archivedAt?: string | null;
-  deletedAt?: string | null;
-  session?: { activeTurnId?: string | null; status?: string } | null;
-}
 interface ResolvedThread {
-  threadId: string;
-  runtimeMode: string;
+  threadId: ThreadId;
+  runtimeMode: RuntimeMode;
 }
 
 function resolveThread(
-  snapshot: { projects: SnapshotProject[]; threads: SnapshotThread[] },
-  opts: {
-    threadId?: string | null;
-    project?: string | null;
-    thread?: string | null;
-  },
+  snapshot: OrchestrationReadModel,
+  opts: { threadId?: string | null; project?: string | null; thread?: string | null },
 ): ResolvedThread {
   if (opts.threadId) {
     const found = snapshot.threads.find((t) => t.id === opts.threadId);
@@ -119,180 +79,222 @@ function resolveThread(
   return { threadId: found.id, runtimeMode: found.runtimeMode };
 }
 
-// ── Wait mode ────────────────────────────────────────────────────────────
+// ── Wait-mode state machine ─────────────────────────────────────────────
 
 type TurnStatus = "running" | "completed" | "error" | "interrupted" | "timeout";
 
-function waitForTurn(
-  pushEvents: Queue.Dequeue<WsPush>,
-  threadId: string,
-  timeoutSec: number,
-): Effect.Effect<{ status: TurnStatus; turnId: string | null; messages: string[] }> {
-  return Effect.gen(function* () {
-    let turnId: string | null = null;
-    let sessionWasRunning = false;
-    const messages: string[] = [];
-    let status: TurnStatus = "running";
-
-    const drain = Effect.gen(function* () {
-      while (status === "running") {
-        const push = yield* Queue.take(pushEvents);
-        if (push.channel !== "orchestration.domainEvent") continue;
-        const event = push.data as {
-          type: string;
-          aggregateId: string;
-          payload: Record<string, unknown>;
-        };
-        if (event.aggregateId !== threadId) continue;
-
-        if (event.type === "thread.session-set") {
-          const session = event.payload["session"] as {
-            activeTurnId: string | null;
-            status: string;
-          } | null;
-          if (session?.activeTurnId && !turnId) {
-            turnId = session.activeTurnId;
-            sessionWasRunning = true;
-          }
-          if (sessionWasRunning && session) {
-            if (!session.activeTurnId) {
-              if (session.status === "error") status = "error";
-              else if (session.status === "stopped" || session.status === "interrupted")
-                status = "interrupted";
-              else if (session.status === "ready" || session.status === "idle")
-                status = "completed";
-            }
-          }
-        } else if (event.type === "thread.message-sent") {
-          const p = event.payload as {
-            role: string;
-            text: string;
-            streaming: boolean;
-          };
-          if (p.role === "assistant" && !p.streaming) {
-            messages.push(p.text);
-          }
-        } else if (event.type === "thread.turn-diff-completed") {
-          const p = event.payload as { status: string };
-          if (p.status === "ready") status = "completed";
-          else if (p.status === "error") status = "error";
-          else status = "interrupted";
-        }
-      }
-    });
-
-    const fiber = yield* Effect.forkChild(drain);
-
-    const timedOut = yield* Fiber.join(fiber).pipe(
-      Effect.timeoutOrElse({
-        duration: Duration.seconds(timeoutSec),
-        orElse: () => Effect.succeed("__timeout__" as const),
-      }),
-    );
-
-    return {
-      status: timedOut === "__timeout__" ? "timeout" : status,
-      turnId,
-      messages,
-    };
-  });
+interface WaitState {
+  turnId: string | null;
+  sessionWasRunning: boolean;
+  /** Completed (non-streaming) assistant messages. */
+  messages: string[];
+  /** In-flight streaming chunks keyed by messageId. */
+  streamingChunks: Map<string, string>;
+  status: TurnStatus;
 }
 
-// ── Command ───────────────────────────────────────────────────────────────
+const INITIAL_WAIT_STATE: WaitState = {
+  turnId: null,
+  sessionWasRunning: false,
+  messages: [],
+  streamingChunks: new Map(),
+  status: "running",
+};
 
-export const sendCommand = Command.make("send", {
-  url: urlFlag,
-  token: tokenFlag,
-  threadId: threadIdFlag,
-  project: projectFlag,
-  thread: threadFlag,
-  text: textFlag,
-  sender: senderFlag,
-  wait: waitFlag,
-  timeout: timeoutFlag,
-}).pipe(
-  Command.withDescription("Send a message to a thread, triggering the agent to act."),
-  Command.withHandler((opts) => {
-    const url = Option.getOrUndefined(opts.url) ?? process.env["T3CODE_URL"];
-    const token = Option.getOrUndefined(opts.token) ?? process.env["T3CODE_TOKEN"];
-    if (!url || !token) {
-      return Effect.sync(() => {
-        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
-        process.exit(1);
-      });
+/**
+ * Process a single domain event and return the updated wait state.
+ * Only events for the target thread are relevant.
+ */
+function processEvent(state: WaitState, event: OrchestrationEvent, threadId: string): WaitState {
+  if (event.aggregateId !== threadId) return state;
+
+  if (event.type === "thread.session-set") {
+    const session = event.payload.session;
+    const newTurnId = state.turnId ?? (session.activeTurnId || null);
+    const nowRunning = state.sessionWasRunning || !!session.activeTurnId;
+
+    if (nowRunning && !session.activeTurnId) {
+      let status: TurnStatus;
+      if (session.status === "error") status = "error";
+      else if (session.status === "stopped" || session.status === "interrupted")
+        status = "interrupted";
+      else status = "completed";
+      return { ...state, turnId: newTurnId, sessionWasRunning: nowRunning, status };
     }
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const client = yield* connect(url, token);
+    return { ...state, turnId: newTurnId, sessionWasRunning: nowRunning };
+  }
 
-        // Always fetch snapshot first (for thread resolution + runtimeMode)
-        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
-          projects: SnapshotProject[];
-          threads: SnapshotThread[];
+  if (event.type === "thread.message-sent") {
+    const { role, text, streaming } = event.payload;
+    const messageId = event.payload.messageId;
+    if (role === "assistant") {
+      if (streaming) {
+        // Accumulate streaming delta chunk
+        const chunks = new Map(state.streamingChunks);
+        chunks.set(messageId, (chunks.get(messageId) ?? "") + text);
+        return { ...state, streamingChunks: chunks };
+      } else {
+        // Streaming complete — use explicit text if non-empty, otherwise accumulated chunks
+        const accumulated = state.streamingChunks.get(messageId) ?? "";
+        const finalText = text.length > 0 ? text : accumulated;
+        const chunks = new Map(state.streamingChunks);
+        chunks.delete(messageId);
+        return {
+          ...state,
+          streamingChunks: chunks,
+          messages: [...state.messages, finalText],
         };
-        const resolved = resolveThread(snapshot, {
-          threadId: Option.getOrNull(opts.threadId),
-          project: Option.getOrNull(opts.project),
-          thread: Option.getOrNull(opts.thread),
-        });
+      }
+    }
+    return state;
+  }
 
-        const commandId = crypto.randomUUID();
-        const messageId = crypto.randomUUID();
-        const command = {
-          type: "thread.turn.start",
-          commandId,
-          threadId: resolved.threadId,
-          message: {
-            messageId,
-            role: "user",
-            text: opts.text,
-            sender: opts.sender.slice(0, 32),
-            attachments: [],
-          },
-          runtimeMode: resolved.runtimeMode,
-          interactionMode: "default",
-          createdAt: new Date().toISOString(),
-        };
+  if (event.type === "thread.turn-diff-completed") {
+    const turnStatus = event.payload.status;
+    const status: TurnStatus =
+      turnStatus === "ready" ? "completed" : turnStatus === "error" ? "error" : "interrupted";
+    return { ...state, status };
+  }
 
-        const isWait = Option.getOrElse(opts.wait, () => false) === true;
-        const timeoutSec = Option.getOrElse(opts.timeout, () => 86400);
+  return state;
+}
 
-        if (isWait) {
-          // CRITICAL: subscribe to push events BEFORE dispatching to avoid race condition
-          const waitEffect = waitForTurn(client.pushEvents, resolved.threadId, timeoutSec);
-          const fiber = yield* Effect.forkChild(waitEffect);
-          yield* client.request("orchestration.dispatchCommand", { command });
-          const waitResult = yield* Fiber.join(fiber);
+// ── Help ────────────────────────────────────────────────────────────────
 
-          // Print collected assistant messages to stdout
-          for (const msg of waitResult.messages) {
-            console.log(msg);
-          }
+function printHelp(): never {
+  console.log("Usage: l6claw-cli send [options]");
+  console.log("");
+  console.log("Send a message to a thread, triggering the agent to act.");
+  console.log("");
+  console.log("Options:");
+  console.log("  --url <url>          WebSocket URL. Overrides T3CODE_URL.");
+  console.log("  --token <token>      Auth token. Overrides T3CODE_TOKEN.");
+  console.log("  --thread-id <id>     Target thread by ID.");
+  console.log("  --project <name>     Target project by name (case-insensitive).");
+  console.log("  --thread <title>     Target thread title (case-insensitive, requires --project).");
+  console.log("  --text <message>     Message text to send (required).");
+  console.log("  --sender <name>      Sender identity shown in the UI, max 32 chars (required).");
+  console.log("  --wait               Block until agent finishes responding.");
+  console.log("  --timeout <seconds>  Max wait time in seconds (default: 86400, --wait only).");
+  console.log("  --help               Show this help message.");
+  process.exit(0);
+}
 
-          const finalStatus = waitResult.status;
-          if (finalStatus !== "completed") {
-            console.error(JSON.stringify({ status: finalStatus, turnId: waitResult.turnId }));
-            process.exit(1);
-          }
-        } else {
-          yield* client.request("orchestration.dispatchCommand", { command });
-          console.log(JSON.stringify({ status: "accepted", turnId: null }));
-        }
-      }),
-    ).pipe(
-      Effect.catchCause((cause) =>
-        Effect.sync(() => {
-          const err = Cause.squash(cause);
-          const msg =
-            err instanceof WsConnectionError
-              ? err.message
-              : err instanceof Error
-                ? err.message
-                : String(err);
-          console.error(`Error: ${msg}`);
-          process.exit(1);
+// ── Command entry point ─────────────────────────────────────────────────
+
+export const runSend = (flags: Record<string, string | true>) => {
+  if (flags.help === true) printHelp();
+
+  const url = (typeof flags.url === "string" ? flags.url : undefined) ?? process.env["T3CODE_URL"];
+  const token =
+    (typeof flags.token === "string" ? flags.token : undefined) ?? process.env["T3CODE_TOKEN"];
+
+  if (!url || !token) {
+    console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
+    process.exit(1);
+  }
+
+  const text = typeof flags.text === "string" ? flags.text : undefined;
+  const sender = typeof flags.sender === "string" ? flags.sender : undefined;
+  if (!text || !sender) {
+    console.error("Error: --text and --sender are required.");
+    process.exit(1);
+  }
+
+  const threadIdOpt = typeof flags["thread-id"] === "string" ? flags["thread-id"] : null;
+  const projectOpt = typeof flags.project === "string" ? flags.project : null;
+  const threadOpt = typeof flags.thread === "string" ? flags.thread : null;
+  const isWait = flags.wait === true;
+  const timeoutSec =
+    typeof flags.timeout === "string" ? Math.max(1, parseInt(flags.timeout, 10) || 86400) : 86400;
+
+  return Effect.gen(function* () {
+    const client = yield* RpcClient.make(WsRpcGroup);
+
+    // Resolve thread from snapshot
+    const snapshot = yield* client[ORCHESTRATION_WS_METHODS.getSnapshot]({});
+    const resolved = resolveThread(snapshot, {
+      threadId: threadIdOpt,
+      project: projectOpt,
+      thread: threadOpt,
+    });
+
+    const command = {
+      type: "thread.turn.start" as const,
+      commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+      threadId: resolved.threadId,
+      message: {
+        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+        role: "user" as const,
+        text,
+        sender: sender.slice(0, 32),
+        attachments: [] as never[],
+      },
+      runtimeMode: resolved.runtimeMode,
+      interactionMode: "default" as const,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (isWait) {
+      // --- Wait mode: subscribe to events, dispatch, wait for completion ---
+      const stateRef = yield* Ref.make<WaitState>(INITIAL_WAIT_STATE);
+      const doneDef = yield* Deferred.make<void>();
+
+      // Fork event stream consumer BEFORE dispatching (avoids race)
+      const eventConsumer = client[WS_METHODS.subscribeOrchestrationDomainEvents]({}).pipe(
+        Stream.runForEach((event: OrchestrationEvent) =>
+          Effect.gen(function* () {
+            const current = yield* Ref.get(stateRef);
+            if (current.status !== "running") return;
+
+            const next = processEvent(current, event, resolved.threadId);
+            yield* Ref.set(stateRef, next);
+            if (next.status !== "running") {
+              yield* Deferred.succeed(doneDef, void 0);
+            }
+          }),
+        ),
+      );
+
+      const fiber = yield* eventConsumer.pipe(Effect.forkChild({ startImmediately: true }));
+
+      // Dispatch the turn-start command
+      yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command);
+
+      // Wait for completion or timeout
+      yield* Deferred.await(doneDef).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.seconds(timeoutSec),
+          orElse: () => Ref.update(stateRef, (s) => ({ ...s, status: "timeout" as TurnStatus })),
         }),
-      ),
-    );
-  }),
-);
+      );
+
+      yield* Fiber.interrupt(fiber);
+
+      const result = yield* Ref.get(stateRef);
+
+      // Print collected assistant messages
+      for (const msg of result.messages) {
+        console.log(msg);
+      }
+
+      if (result.status !== "completed") {
+        console.error(JSON.stringify({ status: result.status, turnId: result.turnId }));
+        process.exit(1);
+      }
+    } else {
+      // --- Fire-and-forget mode ---
+      yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command);
+      console.log(JSON.stringify({ status: "accepted", turnId: null }));
+    }
+  }).pipe(
+    Effect.provide(makeRpcLayer(url, token)),
+    Effect.catchCause((cause) =>
+      Effect.sync(() => {
+        const err = Cause.squash(cause);
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }),
+    ),
+  );
+};

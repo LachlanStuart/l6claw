@@ -129,6 +129,7 @@
       },
       "dependencies": {
         "@effect/platform-node": "catalog:",
+        "@t3tools/contracts": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
