@@ -31,7 +31,7 @@ If a feature already has a spec, the spec must be kept up to date when the featu
 
 ### Spec Diffs
 
-Specs may optionally have a `.diff` file alongside them showing changes from the first implementation. This diff is guidance for locating relevant code areas, not an exact patch. Diffs are not updated for minor changes but may be regenerated if a feature is re-implemented from scratch.
+Specs may optionally have a `.diff` file alongside them showing changes from the first implementation. This diff is guidance for locating relevant code areas, not an exact patch. The diff should exclude the spec `.md` files themselves — it only covers code changes. Diffs are not updated for minor changes but may be regenerated if a feature is re-implemented from scratch.
 
 ### README
 

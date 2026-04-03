@@ -1,7 +1,6 @@
 # 01 - Remote CLI
 
 **Date:** 2026-04-02
-**Status:** Implemented
 
 ## Re-implementation Notes
 

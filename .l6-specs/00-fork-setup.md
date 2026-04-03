@@ -1,7 +1,6 @@
 # 00 - Fork Setup
 
 **Date:** 2026-04-03
-**Status:** Implementing
 
 ---
 
@@ -24,13 +23,17 @@ The application is rebranded from "T3 Code" to "L6 Claw" in all user-facing surf
 - Settings panel descriptions and messages
 - Desktop app window titles, dialog messages, and product name
 - Desktop update notification messages
+- Mac menu bar application name (Electron launcher `CFBundleDisplayName`)
+- Any other presentational elements that show "T3 Code" — a search for `\bT3\b` is recommended
 
 ### What Does NOT Change
 
 - No variable names, type names, or filenames are renamed. This would create unnecessary merge conflicts with upstream.
 - No package names change (`@t3tools/*` stays as-is).
 - No internal identifiers change.
+- Environment variable names (`T3CODE_HOME`, `T3CODE_PORT`, etc.) remain unchanged for compatibility.
 - The T3 Code branding in the README body (installation instructions, etc.) remains untouched.
+- `LEGACY_USER_DATA_DIR_NAME` in the desktop app retains the old "T3 Code" name (used for data migration from the original directory).
 
 ### Branding Constant
 
@@ -92,6 +95,14 @@ Dev and production instances have completely independent databases and settings.
 
 ---
 
+## Default Data Directory
+
+The default base directory is changed from `~/.t3` to `~/.l6` so that L6 Claw operates as a completely separate application from T3 Code, with its own database, settings, worktrees, and logs.
+
+The `T3CODE_HOME` environment variable and `--base-dir` CLI flag can still override this, but when neither is set, L6 Claw defaults to `~/.l6` rather than the upstream `~/.t3`.
+
+---
+
 ## Development Conventions (CLAUDE.md)
 
 The following rules are added to `CLAUDE.md` for AI agents working on this fork:
@@ -119,6 +130,7 @@ The following rules are added to `CLAUDE.md` for AI agents working on this fork:
 ### Spec Diffs
 
 - Specs may optionally have a `.diff` file alongside them, showing the changes from the first implementation.
+- The diff should exclude the spec `.md` files themselves — it only covers code changes.
 - The diff is guidance for locating relevant code areas, not an exact patch.
 - Diffs are not updated for minor changes but may be regenerated if a feature is re-implemented from scratch.
 
