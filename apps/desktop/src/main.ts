@@ -291,7 +291,6 @@ function backendChildEnv(): NodeJS.ProcessEnv {
   delete env.T3CODE_PORT;
   delete env.T3CODE_MODE;
   delete env.T3CODE_NO_BROWSER;
-  delete env.T3CODE_HOST;
   delete env.T3CODE_DESKTOP_WS_URL;
   delete env.T3CODE_DESKTOP_LAN_ACCESS;
   delete env.T3CODE_DESKTOP_LAN_HOST;

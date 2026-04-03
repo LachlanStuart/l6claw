@@ -368,6 +368,9 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                     )}
                   </div>
                   <p className="text-right text-xs text-muted-foreground/50">
+                    {row.message.sender && (
+                      <span className="text-primary/40">{row.message.sender} · </span>
+                    )}
                     {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
                   </p>
                 </div>

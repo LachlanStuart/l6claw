@@ -110,6 +110,9 @@ export const ServerSettings = Schema.Struct({
     ),
   ),
 
+  // Auth
+  authToken: Schema.optional(Schema.String),
+
   // Provider specific settings
   providers: Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -188,6 +191,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  authToken: Schema.optionalKey(Schema.NullOr(Schema.String)),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),

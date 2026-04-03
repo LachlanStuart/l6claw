@@ -122,6 +122,9 @@ export const ServerConfig = Schema.Struct({
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
   settings: ServerSettings,
+  host: Schema.optional(Schema.String),
+  port: Schema.optional(Schema.Number),
+  authToken: Schema.optional(Schema.String),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

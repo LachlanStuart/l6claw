@@ -172,6 +172,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     role: message.role,
     text: message.text,
     turnId: message.turnId,
+    sender: message.sender ?? null,
     createdAt: message.createdAt,
     streaming: message.streaming,
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
@@ -1361,6 +1362,7 @@ function applyEnvironmentOrchestrationEvent(
             ? { attachments: event.payload.attachments }
             : {}),
           turnId: event.payload.turnId,
+          sender: event.payload.sender,
           streaming: event.payload.streaming,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,

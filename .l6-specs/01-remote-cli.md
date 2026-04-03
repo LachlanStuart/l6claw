@@ -24,7 +24,7 @@ l6claw-cli threads              # Human-readable table
 l6claw-cli threads --json       # Machine-readable JSON array
 ```
 
-**Send a message (fire and forget):**
+**Send a message and wait for the agent's response (default):**
 
 ```bash
 l6claw-cli send \
@@ -33,17 +33,17 @@ l6claw-cli send \
   --sender "Build Server"
 ```
 
-**Send a message and wait for the agent's response:**
+By default, `send` blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
+
+**Send a message without waiting (fire and forget):**
 
 ```bash
 l6claw-cli send \
   --thread-id abc123-def4-5678-9012-abcdef345678 \
   --text "What is the status of the refactor?" \
   --sender "Orchestrator" \
-  --wait
+  --no-wait
 ```
-
-The `--wait` flag blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
 
 Run `l6claw-cli --help` or `l6claw-cli <command> --help` for full flag documentation.
 
@@ -75,7 +75,7 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 l6claw-cli
 ```
 
-Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses `@effect/cli` for command/option parsing, consistent with the rest of the codebase.
+Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses a minimal hand-rolled argv parser for subcommand/flag parsing (the Effect CLI beta has broken subcommand dispatch).
 
 ### Global Options
 
@@ -88,11 +88,13 @@ Flag values take precedence over environment variables.
 
 ### Connection
 
-The CLI connects via WebSocket with the auth token as a query parameter:
+The CLI connects via WebSocket to the server's `/ws` path using the Effect RPC protocol (JSON serialization over WebSocket), with the auth token as a query parameter:
 
 ```
-ws://<host>:<port>/?token=<auth-token>
+ws://<host>:<port>/ws?token=<auth-token>
 ```
+
+The CLI uses `RpcClient.layerProtocolSocket` with `RpcSerialization.layerJson` and `NodeSocket.layerWebSocket` — the same Effect RPC protocol used by the web app. This means the CLI calls typed RPC methods directly (e.g. `client[ORCHESTRATION_WS_METHODS.getSnapshot]({})`) rather than using a custom wire format.
 
 If the token is invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
 
@@ -150,21 +152,21 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 Send a message to a thread, triggering the agent to act.
 
 ```
-l6claw-cli send --thread-id <id> --text <message> --sender <name> [--wait] [--timeout <seconds>]
-l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--wait] [--timeout <seconds>]
+l6claw-cli send --thread-id <id> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
+l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
 ```
 
 **Options:**
 
-| Flag                  | Required                                                    | Default            | Description                                                                 |
-| --------------------- | ----------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                         |
-| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                             |
-| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`) |
-| `--text <message>`    | Yes                                                         |                    | Message text to send                                                        |
-| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                     |
-| `--wait`              | No                                                          | `false`            | Block until the agent finishes responding                                   |
-| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds (only applies when `--wait` is set)            |
+| Flag                  | Required                                                    | Default            | Description                                                                      |
+| --------------------- | ----------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------- |
+| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                              |
+| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                                  |
+| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`)      |
+| `--text <message>`    | Yes                                                         |                    | Message text to send                                                             |
+| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                          |
+| `--no-wait`           | No                                                          | `false`            | Dispatch and exit immediately without waiting for the agent to finish responding |
+| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds                                                     |
 
 **Thread resolution:**
 
@@ -190,7 +192,11 @@ Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI a
 
 - If the resolved thread has an active turn in progress: exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
 
-**Fire-and-forget mode (no `--wait`):**
+**Wait mode (default):**
+
+Dispatches the command, subscribes to the domain event stream, and blocks until the turn completes:
+
+**Fire-and-forget mode (`--no-wait`):**
 
 Dispatches the command and prints acknowledgment to stdout:
 
@@ -200,16 +206,16 @@ Dispatches the command and prints acknowledgment to stdout:
 
 Note: `turnId` is null because turn IDs are assigned asynchronously by the provider, not at command dispatch time. Exit code 0.
 
-**Wait mode (`--wait`):**
-
-Dispatches the command, subscribes to server push events, and blocks until the turn completes:
+**Wait mode outcomes:**
 
 - **Success:** prints each assistant message text to stdout (one per line, in order), exit code 0
 - **Error:** prints any assistant text collected so far to stdout, prints error info to stderr as `{"status": "error", "turnId": "<id>"}`, exit code 1
 - **Timeout:** prints any assistant text collected so far to stdout, prints to stderr as `{"status": "timeout", "turnId": "<id>"}`, exit code 1
 - **Interrupted:** same pattern, stderr `{"status": "interrupted", "turnId": "<id>"}`, exit code 1
 
-The CLI must subscribe to push events **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
+The CLI subscribes to the `subscribeOrchestrationDomainEvents` RPC stream **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
+
+**Streaming message accumulation:** Assistant messages arrive as multiple `thread.message-sent` domain events with `streaming: true` (each carrying a text delta/chunk), followed by a final event with `streaming: false` (with empty text). The CLI accumulates streaming chunks per `messageId` and finalizes the complete message text when the `streaming: false` event arrives.
 
 **Security constraint:** The `runtimeMode` is always echoed from the thread's current state — the CLI never changes it. The `interactionMode` is always set to `"default"`. This ensures the CLI cannot escalate a thread's permissions.
 
@@ -269,6 +275,20 @@ Messages sent from the web UI have `sender: null` and render exactly as they do 
 | **Persist checkbox** | "Persist across restarts" — toggles whether the token is saved to `settings.json`                   |
 
 The token field is always read-only in the UI. To use a custom token, set it via the `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag.
+
+### Desktop Runtime Requirement
+
+When L6 Claw runs as the desktop app, the embedded server must follow the same stable port selection rules as the standalone server instead of reserving a fresh ephemeral port on each launch.
+
+- If `T3CODE_HOST` is set, the desktop app must bind the embedded server to that host/interface.
+- If `T3CODE_HOST` is unset, the desktop app must use the normal desktop default host `127.0.0.1`.
+- If `T3CODE_PORT` is set, the desktop app must bind the embedded server to that port.
+- If `T3CODE_PORT` is unset, the desktop app must use the normal desktop default port `3773`.
+- Restarting the desktop app must not change the host or port unless the configured values change.
+
+This host override must work when the desktop app is launched through the normal project task runner (`bun run start:desktop`), not only when Electron is started directly.
+
+This requirement exists so local helper processes and external automation can reconnect to the desktop-hosted WebSocket endpoint without rediscovering a new port after every restart.
 
 ---
 
