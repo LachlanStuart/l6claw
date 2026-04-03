@@ -1,0 +1,335 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index cea5090c..f821a345 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,43 @@
+ # AGENTS.md
+ 
++## L6 Claw Fork Conventions
++
++This is a fork of T3 Code. The following rules apply to all work on this fork:
++
++### Migrations
++
++Migrations added in this fork **must** use the fork migrations mechanism in `apps/server/src/persistence/ForkMigrations.ts`. Never add entries to the upstream `Migrations.ts` migration list. Fork migrations use a separate tracking table (`effect_sql_fork_migrations`) with independent numbering, so they never conflict with upstream migrations.
++
++### Surgical Changes
++
++Code changes should be surgical and self-contained to minimise merge conflicts with the upstream branch. Prefer appending to files over inserting into the middle. Avoid renaming variables, filenames, or restructuring upstream code.
++
++### PR Target
++
++PRs must target the fork repo https://github.com/LachlanStuart/l6claw — **not** the upstream repo.
++
++### Spec Files
++
++All features added in this fork must have a high-level spec in `.l6-specs/` that enables re-implementation from scratch. Spec files are numbered (e.g. `00-fork-setup.md`, `01-remote-cli.md`).
++
++Specs should:
++
++- Explain the purpose and motivation from the user's perspective
++- Detail user-observable behaviour so the UX is preserved even if re-implemented completely differently
++- Optionally include recommendations for settings file structure and database migrations for data compatibility
++- Avoid referencing specific code unless it directly affects user experience — the purpose is to survive a complete codebase rewrite
++
++If a feature already has a spec, the spec must be kept up to date when the feature changes.
++
++### Spec Diffs
++
++Specs may optionally have a `.diff` file alongside them showing changes from the first implementation. This diff is guidance for locating relevant code areas, not an exact patch. The diff should exclude the spec `.md` files themselves — it only covers code changes. Diffs are not updated for minor changes but may be regenerated if a feature is re-implemented from scratch.
++
++### README
++
++The L6 Claw section at the top of `README.md` includes a bullet-point list of implemented specs, each linking to its `.l6-specs/*.md` file. This list must be updated with each new spec.
++
++---
++
+ ## Task Completion Requirements
+ 
+diff --git a/README.md b/README.md
+index d3a54a1b..c1f969fa 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,17 @@
++# L6 Claw (built on [T3 Code](https://github.com/pingdotgg/t3code))
++
++L6 Claw is a personal fork of T3 Code that extends it with Claw-like agentic abilities. This is personal software. I will not support it or package it for you. Feel free to take any parts that you want. 
++
++Eternal gratitude to [Julius Marminge](https://github.com/juliusmarminge), [Theo Browne](https://github.com/t3dotgg), and [T3 Code contributors](https://github.com/pingdotgg/t3code/graphs/contributors) for building and open-sourcing T3 Code.
++
++### Implemented Features
++
++This fork endeavours to add features via self-contained, spec-driven additions. This makes the features easy to copy elsewhere, or reimplement from scratch if upstream changes too much.
++
++- [00 - Fork Setup](.l6-specs/00-fork-setup.md) — Rebranding, fork migration isolation, and development conventions
++- [01 - Remote CLI](.l6-specs/01-remote-cli.md) — CLI tool for remote agents to interact with threads over WebSocket
++
++---
++
+ # T3 Code
+ 
+diff --git a/apps/desktop/package.json b/apps/desktop/package.json
+index dfa3bde2..0cad62b5 100644
+--- a/apps/desktop/package.json
++++ b/apps/desktop/package.json
+@@ -27,4 +27,4 @@
+     "vitest": "catalog:"
+   },
+-  "productName": "T3 Code (Alpha)"
++  "productName": "L6 Claw"
+ }
+diff --git a/apps/desktop/scripts/electron-launcher.mjs b/apps/desktop/scripts/electron-launcher.mjs
+index 9d7c5227..46bcdfa7 100644
+--- a/apps/desktop/scripts/electron-launcher.mjs
++++ b/apps/desktop/scripts/electron-launcher.mjs
+@@ -1,3 +1,3 @@
+-// This file mostly exists because we want dev mode to say "T3 Code (Dev)" instead of "electron"
++// This file mostly exists because we want dev mode to say "L6 Claw (Dev)" instead of "electron"
+ 
+ import { spawnSync } from "node:child_process";
+@@ -18,5 +18,5 @@ import { fileURLToPath } from "node:url";
+ 
+ const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
++const APP_DISPLAY_NAME = isDevelopment ? "L6 Claw (Dev)" : "L6 Claw";
+ const APP_BUNDLE_ID = "com.t3tools.t3code";
+ const LAUNCHER_VERSION = 1;
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 3d61571d..c83a69fe 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -61,10 +61,10 @@ const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+ const UPDATE_CHECK_CHANNEL = "desktop:update-check";
+ const GET_WS_URL_CHANNEL = "desktop:get-ws-url";
+-const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
++const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".l6");
+ const STATE_DIR = Path.join(BASE_DIR, "userdata");
+ const DESKTOP_SCHEME = "t3";
+ const ROOT_DIR = Path.resolve(__dirname, "../../..");
+ const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
+-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
++const APP_DISPLAY_NAME = isDevelopment ? "L6 Claw (Dev)" : "L6 Claw";
+ const APP_USER_MODEL_ID = "com.t3tools.t3code";
+ const LINUX_DESKTOP_ENTRY_NAME = isDevelopment ? "t3code-dev.desktop" : "t3code.desktop";
+@@ -485,5 +485,5 @@ function handleFatalStartupError(stage: string, error: unknown): void {
+   if (!isQuitting) {
+     isQuitting = true;
+-    dialog.showErrorBox("T3 Code failed to start", `Stage: ${stage}\n${message}${detail}`);
++    dialog.showErrorBox("L6 Claw failed to start", `Stage: ${stage}\n${message}${detail}`);
+   }
+   stopBackend();
+@@ -590,5 +590,5 @@ async function checkForUpdatesFromMenu(): Promise<void> {
+       type: "info",
+       title: "You're up to date!",
+-      message: `T3 Code ${updateState.currentVersion} is currently the newest version available.`,
++      message: `L6 Claw ${updateState.currentVersion} is currently the newest version available.`,
+       buttons: ["OK"],
+     });
+diff --git a/apps/server/src/os-jank.ts b/apps/server/src/os-jank.ts
+index c3629e8f..c63401ee 100644
+--- a/apps/server/src/os-jank.ts
++++ b/apps/server/src/os-jank.ts
+@@ -41,5 +41,5 @@ export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
+   const { join, resolve } = yield* Path.Path;
+   if (!raw || raw.trim().length === 0) {
+-    return join(OS.homedir(), ".t3");
++    return join(OS.homedir(), ".l6");
+   }
+   return resolve(yield* expandHomePath(raw.trim()));
+diff --git a/apps/server/src/persistence/ForkMigrations.ts b/apps/server/src/persistence/ForkMigrations.ts
+new file mode 100644
+index 00000000..c8d248e8
+--- /dev/null
++++ b/apps/server/src/persistence/ForkMigrations.ts
+@@ -0,0 +1,46 @@
++/**
++ * ForkMigrations - Fork-specific migration runner
++ *
++ * Maintains fork-specific schema changes separately from upstream migrations.
++ * Uses a dedicated tracking table (effect_sql_fork_migrations) so that
++ * fork migration IDs never conflict with upstream migration IDs.
++ *
++ * Fork migrations always run after upstream migrations to ensure the
++ * base schema is in place before fork-specific columns/tables are added.
++ */
++
++import * as Migrator from "effect/unstable/sql/Migrator";
++import * as Effect from "effect/Effect";
++
++const FORK_MIGRATIONS_TABLE = "effect_sql_fork_migrations";
++
++// Fork migrations are registered here. Add new entries at the end.
++const forkMigrationEntries: readonly (readonly [number, string, Effect.Effect<unknown>])[] =
++  [] as const;
++
++export const makeForkMigrationLoader = (throughId?: number) =>
++  Migrator.fromRecord(
++    Object.fromEntries(
++      forkMigrationEntries
++        .filter(([id]) => throughId === undefined || id <= throughId)
++        .map(([id, name, migration]) => [`${id}_${name}`, migration]),
++    ),
++  );
++
++const run = Migrator.make({});
++
++export const runForkMigrations = () =>
++  Effect.gen(function* () {
++    if (forkMigrationEntries.length === 0) return [];
++    yield* Effect.log("Running fork migrations...");
++    const executedMigrations = yield* run({
++      loader: makeForkMigrationLoader(),
++      table: FORK_MIGRATIONS_TABLE,
++    });
++    yield* Effect.log("Fork migrations ran successfully").pipe(
++      Effect.annotateLogs({
++        migrations: executedMigrations.map(([id, name]) => `${id}_${name}`),
++      }),
++    );
++    return executedMigrations;
++  });
+diff --git a/apps/server/src/persistence/ForkMigrations/.gitkeep b/apps/server/src/persistence/ForkMigrations/.gitkeep
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/apps/server/src/persistence/Migrations.ts b/apps/server/src/persistence/Migrations.ts
+index a03c3c2d..3ebe2809 100644
+--- a/apps/server/src/persistence/Migrations.ts
++++ b/apps/server/src/persistence/Migrations.ts
+@@ -13,4 +13,6 @@ import * as Layer from "effect/Layer";
+ import * as Effect from "effect/Effect";
+ 
++import { runForkMigrations } from "./ForkMigrations.ts";
++
+ // Import all migrations statically
+ import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
+@@ -127,3 +129,8 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
+  * ```
+  */
+-export const MigrationsLive = Layer.effectDiscard(runMigrations());
++export const MigrationsLive = Layer.effectDiscard(
++  Effect.gen(function* () {
++    yield* runMigrations();
++    yield* runForkMigrations();
++  }),
++);
+diff --git a/apps/web/index.html b/apps/web/index.html
+index 0322f2d0..ef059365 100644
+--- a/apps/web/index.html
++++ b/apps/web/index.html
+@@ -12,5 +12,5 @@
+       rel="stylesheet"
+     />
+-    <title>T3 Code (Alpha)</title>
++    <title>L6 Claw</title>
+   </head>
+   <body>
+diff --git a/apps/web/src/branding.ts b/apps/web/src/branding.ts
+index bffd9838..9b375f5b 100644
+--- a/apps/web/src/branding.ts
++++ b/apps/web/src/branding.ts
+@@ -1,4 +1,6 @@
+-export const APP_BASE_NAME = "T3 Code";
+-export const APP_STAGE_LABEL = import.meta.env.DEV ? "Dev" : "Alpha";
+-export const APP_DISPLAY_NAME = `${APP_BASE_NAME} (${APP_STAGE_LABEL})`;
++export const APP_BASE_NAME = "L6 Claw";
++export const APP_STAGE_LABEL = import.meta.env.DEV ? "Dev" : "";
++export const APP_DISPLAY_NAME = APP_STAGE_LABEL
++  ? `${APP_BASE_NAME} (${APP_STAGE_LABEL})`
++  : APP_BASE_NAME;
+ export const APP_VERSION = import.meta.env.APP_VERSION || "0.0.0";
+diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
+index 89ced464..a20753bd 100644
+--- a/apps/web/src/components/Sidebar.tsx
++++ b/apps/web/src/components/Sidebar.tsx
+@@ -57,5 +57,5 @@ import {
+ } from "@t3tools/contracts/settings";
+ import { isElectron } from "../env";
+-import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
++import { APP_VERSION } from "../branding";
+ import { isTerminalFocused } from "../lib/terminalFocus";
+ import { isLinuxPlatform, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
+@@ -541,8 +541,9 @@ function SidebarThreadRow(props: SidebarThreadRowProps) {
+ }
+ 
++// eslint-disable-next-line no-unused-vars -- kept for upstream merge compatibility
+ function T3Wordmark() {
+   return (
+     <svg
+-      aria-label="T3"
++      aria-label="L6 Claw"
+       className="h-2.5 w-auto shrink-0 text-foreground"
+       viewBox="15.5309 37 94.3941 56.96"
+@@ -1976,10 +1977,7 @@ export default function Sidebar() {
+               to="/"
+             >
+-              <T3Wordmark />
++              <span className="truncate text-sm font-bold tracking-tight text-foreground">L6</span>
+               <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
+-                Code
+-              </span>
+-              <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
+-                {APP_STAGE_LABEL}
++                Claw
+               </span>
+             </Link>
+diff --git a/apps/web/src/components/desktopUpdate.logic.test.ts b/apps/web/src/components/desktopUpdate.logic.test.ts
+index 84bde530..3ad962a6 100644
+--- a/apps/web/src/components/desktopUpdate.logic.test.ts
++++ b/apps/web/src/components/desktopUpdate.logic.test.ts
+@@ -213,5 +213,5 @@ describe("desktop update UI helpers", () => {
+         downloadedVersion: "1.1.1",
+       }),
+-    ).toContain("Install update 1.1.1 and restart T3 Code?");
++    ).toContain("Install update 1.1.1 and restart L6 Claw?");
+   });
+ 
+@@ -222,5 +222,5 @@ describe("desktop update UI helpers", () => {
+         downloadedVersion: null,
+       }),
+-    ).toContain("Install update and restart T3 Code?");
++    ).toContain("Install update and restart L6 Claw?");
+   });
+ });
+diff --git a/apps/web/src/components/desktopUpdate.logic.ts b/apps/web/src/components/desktopUpdate.logic.ts
+index 38983c81..4cf9cf08 100644
+--- a/apps/web/src/components/desktopUpdate.logic.ts
++++ b/apps/web/src/components/desktopUpdate.logic.ts
+@@ -45,10 +45,10 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
+   const action = resolveDesktopUpdateButtonAction(state);
+   if (action === "download") {
+-    return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.";
++    return "This Mac has Apple Silicon, but L6 Claw is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.";
+   }
+   if (action === "install") {
+-    return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.";
++    return "This Mac has Apple Silicon, but L6 Claw is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.";
+   }
+-  return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.";
++  return "This Mac has Apple Silicon, but L6 Claw is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.";
+ }
+ 
+@@ -81,5 +81,5 @@ export function getDesktopUpdateInstallConfirmationMessage(
+ ): string {
+   const version = state.downloadedVersion ?? state.availableVersion;
+-  return `Install update${version ? ` ${version}` : ""} and restart T3 Code?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.`;
++  return `Install update${version ? ` ${version}` : ""} and restart L6 Claw?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.`;
+ }
+ 
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index d534eefa..e3ee0cbe 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -141,5 +141,5 @@ function getProviderSummary(provider: ServerProvider | undefined) {
+       headline: "Disabled",
+       detail:
+-        provider.message ?? "This provider is installed but disabled for new sessions in T3 Code.",
++        provider.message ?? "This provider is installed but disabled for new sessions in L6 Claw.",
+     };
+   }
+@@ -782,5 +782,5 @@ export function GeneralSettingsPanel() {
+         <SettingsRow
+           title="Theme"
+-          description="Choose how T3 Code looks across the app."
++          description="Choose how L6 Claw looks across the app."
+           resetAction={
+             theme !== "system" ? (

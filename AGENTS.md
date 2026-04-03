@@ -1,5 +1,44 @@
 # AGENTS.md
 
+## L6 Claw Fork Conventions
+
+This is a fork of T3 Code. The following rules apply to all work on this fork:
+
+### Migrations
+
+Migrations added in this fork **must** use the fork migrations mechanism in `apps/server/src/persistence/ForkMigrations.ts`. Never add entries to the upstream `Migrations.ts` migration list. Fork migrations use a separate tracking table (`effect_sql_fork_migrations`) with independent numbering, so they never conflict with upstream migrations.
+
+### Surgical Changes
+
+Code changes should be surgical and self-contained to minimise merge conflicts with the upstream branch. Prefer appending to files over inserting into the middle. Avoid renaming variables, filenames, or restructuring upstream code.
+
+### PR Target
+
+PRs must target the fork repo https://github.com/LachlanStuart/l6claw — **not** the upstream repo.
+
+### Spec Files
+
+All features added in this fork must have a high-level spec in `.l6-specs/` that enables re-implementation from scratch. Spec files are numbered (e.g. `00-fork-setup.md`, `01-remote-cli.md`).
+
+Specs should:
+
+- Explain the purpose and motivation from the user's perspective
+- Detail user-observable behaviour so the UX is preserved even if re-implemented completely differently
+- Optionally include recommendations for settings file structure and database migrations for data compatibility
+- Avoid referencing specific code unless it directly affects user experience — the purpose is to survive a complete codebase rewrite
+
+If a feature already has a spec, the spec must be kept up to date when the feature changes.
+
+### Spec Diffs
+
+Specs may optionally have a `.diff` file alongside them showing changes from the first implementation. This diff is guidance for locating relevant code areas, not an exact patch. The diff should exclude the spec `.md` files themselves — it only covers code changes. Diffs are not updated for minor changes but may be regenerated if a feature is re-implemented from scratch.
+
+### README
+
+The L6 Claw section at the top of `README.md` includes a bullet-point list of implemented specs, each linking to its `.l6-specs/*.md` file. This list must be updated with each new spec.
+
+---
+
 ## Task Completion Requirements
 
 - All of `bun fmt`, `bun lint`, and `bun typecheck` must pass before considering tasks completed.

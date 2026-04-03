@@ -1,0 +1,1302 @@
+diff --git a/apps/server/src/main.ts b/apps/server/src/main.ts
+index 019783c2..792bcb98 100644
+--- a/apps/server/src/main.ts
++++ b/apps/server/src/main.ts
+@@ -7,4 +7,5 @@
+  * @module CliConfig
+  */
++import { randomBytes } from "node:crypto";
+ import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
+ import { Command, Flag } from "effect/unstable/cli";
+@@ -231,5 +232,5 @@ const ServerConfigLive = (input: CliInput) =>
+         ),
+       );
+-      const authToken = resolveOptionPrecedence(
++      const authTokenFromFlags = resolveOptionPrecedence(
+         input.authToken,
+         Option.fromUndefinedOr(env.authToken),
+@@ -238,4 +239,26 @@ const ServerConfigLive = (input: CliInput) =>
+         ),
+       );
++
++      // If no token from flags/env/bootstrap, try settings.json; if still nothing, auto-generate ephemeral token
++      const authToken: Option.Option<string> = yield* Effect.gen(function* () {
++        if (Option.isSome(authTokenFromFlags)) {
++          return authTokenFromFlags;
++        }
++        const fs = yield* FileSystem.FileSystem;
++        const fromSettings = yield* fs.readFileString(derivedPaths.settingsPath).pipe(
++          Effect.map((raw) => {
++            try {
++              const parsed = JSON.parse(raw) as Record<string, unknown>;
++              return Option.fromUndefinedOr(parsed.authToken as string | undefined);
++            } catch {
++              return Option.none<string>();
++            }
++          }),
++          Effect.orElseSucceed(() => Option.none<string>()),
++        );
++        return Option.isSome(fromSettings)
++          ? fromSettings
++          : Option.some(randomBytes(32).toString("hex"));
++      });
+       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
+         input.autoBootstrapProjectFromCwd,
+@@ -282,5 +305,5 @@ const ServerConfigLive = (input: CliInput) =>
+         devUrl,
+         noBrowser,
+-        authToken: Option.getOrUndefined(authToken),
++        authToken: Option.getOrThrow(authToken),
+         autoBootstrapProjectFromCwd,
+         logWebSocketEvents,
+diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+index f0f2ccab..989b7fdc 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+@@ -650,4 +650,5 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+             text: nextText,
+             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
++            sender: event.payload.sender,
+             isStreaming: event.payload.streaming,
+             createdAt: existingMessage?.createdAt ?? event.payload.createdAt,
+diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+index 32143d75..b03033bc 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+@@ -288,4 +288,5 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+               text: "hello from projection",
+               turnId: asTurnId("turn-1"),
++              sender: null,
+               streaming: false,
+               createdAt: "2026-02-24T00:00:04.000Z",
+diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+index f951c54b..dc4c2d17 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+@@ -195,4 +195,5 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+           attachments_json AS "attachments",
+           is_streaming AS "isStreaming",
++          sender,
+           created_at AS "createdAt",
+           updated_at AS "updatedAt"
+@@ -437,4 +438,5 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+               ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+               turnId: row.turnId,
++              sender: row.sender,
+               streaming: row.isStreaming === 1,
+               createdAt: row.createdAt,
+diff --git a/apps/server/src/orchestration/decider.ts b/apps/server/src/orchestration/decider.ts
+index 22f5bcb2..e41e4342 100644
+--- a/apps/server/src/orchestration/decider.ts
++++ b/apps/server/src/orchestration/decider.ts
+@@ -357,4 +357,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: null,
+           streaming: false,
++          sender: command.message.sender ? command.message.sender.slice(0, 32) : null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+@@ -546,4 +547,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: command.turnId ?? null,
+           streaming: true,
++          sender: null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+@@ -573,4 +575,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: command.turnId ?? null,
+           streaming: false,
++          sender: null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts b/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
+index b761387d..e0714590 100644
+--- a/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
++++ b/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
+@@ -36,4 +36,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         text: "initial",
+         attachments: persistedAttachments,
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -47,4 +48,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         role: "user",
+         text: "updated",
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -81,4 +83,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+           },
+         ],
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -93,4 +96,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         text: "cleared",
+         attachments: [],
++        sender: null,
+         isStreaming: false,
+         createdAt,
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts b/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
+index 6f0b25dd..ca79c018 100644
+--- a/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
++++ b/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
+@@ -17,4 +17,5 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
+     isStreaming: Schema.Number,
+     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
++    sender: Schema.NullOr(Schema.String),
+   }),
+ );
+@@ -36,4 +37,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text,
+           attachments_json,
++          sender,
+           is_streaming,
+           created_at,
+@@ -54,4 +56,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+             )
+           ),
++          ${row.sender},
+           ${row.isStreaming ? 1 : 0},
+           ${row.createdAt},
+@@ -68,4 +71,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+             projection_thread_messages.attachments_json
+           ),
++          sender = excluded.sender,
+           is_streaming = excluded.is_streaming,
+           created_at = excluded.created_at,
+@@ -87,4 +91,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text,
+           attachments_json AS "attachments",
++          sender,
+           is_streaming AS "isStreaming",
+           created_at AS "createdAt",
+@@ -123,4 +128,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text: row.text,
+           isStreaming: row.isStreaming === 1,
++          sender: row.sender ?? null,
+           createdAt: row.createdAt,
+           updatedAt: row.updatedAt,
+diff --git a/apps/server/src/persistence/Migrations.ts b/apps/server/src/persistence/Migrations.ts
+index c759665f..e864b4c7 100644
+--- a/apps/server/src/persistence/Migrations.ts
++++ b/apps/server/src/persistence/Migrations.ts
+@@ -32,4 +32,5 @@ import Migration0016 from "./Migrations/016_CanonicalizeModelSelections.ts";
+ import Migration0017 from "./Migrations/017_ProjectionThreadsArchivedAt.ts";
+ import Migration0018 from "./Migrations/018_ProjectionThreadsArchivedAtIndex.ts";
++import Migration0019 from "./Migrations/019_ProjectionThreadMessageSender.ts";
+ 
+ /**
+@@ -62,4 +63,5 @@ export const migrationEntries = [
+   [17, "ProjectionThreadsArchivedAt", Migration0017],
+   [18, "ProjectionThreadsArchivedAtIndex", Migration0018],
++  [19, "ProjectionThreadMessageSender", Migration0019],
+ ] as const;
+ 
+diff --git a/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts b/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts
+new file mode 100644
+index 00000000..9682a2ce
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts
+@@ -0,0 +1,11 @@
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as Effect from "effect/Effect";
++
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  yield* sql`
++    ALTER TABLE projection_thread_messages
++    ADD COLUMN sender TEXT
++  `;
++});
+diff --git a/apps/server/src/persistence/Services/ProjectionThreadMessages.ts b/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
+index 00b1d399..cd5c8d11 100644
+--- a/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
++++ b/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
+@@ -27,4 +27,5 @@ export const ProjectionThreadMessage = Schema.Struct({
+   text: Schema.String,
+   attachments: Schema.optional(Schema.Array(ChatAttachment)),
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   isStreaming: Schema.Boolean,
+   createdAt: IsoDateTime,
+diff --git a/apps/server/src/provider/Layers/ProviderRegistry.test.ts b/apps/server/src/provider/Layers/ProviderRegistry.test.ts
+index 116c008d..d22474c7 100644
+--- a/apps/server/src/provider/Layers/ProviderRegistry.test.ts
++++ b/apps/server/src/provider/Layers/ProviderRegistry.test.ts
+@@ -22,5 +22,5 @@ import {
+ import * as PlatformError from "effect/PlatformError";
+ import { ChildProcessSpawner } from "effect/unstable/process";
+-import { deepMerge } from "@t3tools/shared/Struct";
++import { deepMerge, type DeepPartial } from "@t3tools/shared/Struct";
+ 
+ import {
+@@ -111,5 +111,7 @@ function makeMutableServerSettingsService(
+         Effect.gen(function* () {
+           const current = yield* Ref.get(settingsRef);
+-          const next = Schema.decodeSync(ServerSettings)(deepMerge(current, patch));
++          const next = Schema.decodeSync(ServerSettings)(
++            deepMerge(current, patch as DeepPartial<ServerSettings>),
++          );
+           yield* Ref.set(settingsRef, next);
+           yield* PubSub.publish(changes, next);
+diff --git a/apps/server/src/serverSettings.ts b/apps/server/src/serverSettings.ts
+index a5b4345d..113a61ac 100644
+--- a/apps/server/src/serverSettings.ts
++++ b/apps/server/src/serverSettings.ts
+@@ -92,5 +92,7 @@ export class ServerSettingsService extends ServiceMap.Service<
+           updateSettings: (patch) =>
+             Ref.get(currentSettingsRef).pipe(
+-              Effect.map((currentSettings) => deepMerge(currentSettings, patch)),
++              Effect.map((currentSettings) =>
++                deepMerge(currentSettings, patch as DeepPartial<ServerSettings>),
++              ),
+               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+             ),
+@@ -325,5 +327,11 @@ const makeServerSettings = Effect.gen(function* () {
+         Effect.gen(function* () {
+           const current = yield* getSettingsFromCache;
+-          const next = yield* Schema.decodeEffect(ServerSettings)(deepMerge(current, patch)).pipe(
++          const merged = deepMerge(current, patch as DeepPartial<ServerSettings>);
++          // Normalize authToken: null → undefined (null is the "remove" signal in the patch)
++          const normalized = {
++            ...merged,
++            authToken: merged.authToken ?? undefined,
++          };
++          const next = yield* Schema.decodeEffect(ServerSettings)(normalized).pipe(
+             Effect.mapError(
+               (cause) =>
+diff --git a/apps/server/src/wsServer.ts b/apps/server/src/wsServer.ts
+index 25f81589..c106cdf2 100644
+--- a/apps/server/src/wsServer.ts
++++ b/apps/server/src/wsServer.ts
+@@ -914,4 +914,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
+           availableEditors,
+           settings,
++          host,
++          port,
++          authToken,
+         };
+       }
+diff --git a/apps/web/src/components/ChatView.browser.tsx b/apps/web/src/components/ChatView.browser.tsx
+index 20816d69..d90f86ae 100644
+--- a/apps/web/src/components/ChatView.browser.tsx
++++ b/apps/web/src/components/ChatView.browser.tsx
+@@ -154,4 +154,5 @@ function createUserMessage(options: {
+     ...(options.attachments ? { attachments: options.attachments } : {}),
+     turnId: null,
++    sender: null,
+     streaming: false,
+     createdAt: isoAt(options.offsetSeconds),
+@@ -166,4 +167,5 @@ function createAssistantMessage(options: { id: MessageId; text: string; offsetSe
+     text: options.text,
+     turnId: null,
++    sender: null,
+     streaming: false,
+     createdAt: isoAt(options.offsetSeconds),
+diff --git a/apps/web/src/components/KeybindingsToast.browser.tsx b/apps/web/src/components/KeybindingsToast.browser.tsx
+index 224bd2f8..d037f225 100644
+--- a/apps/web/src/components/KeybindingsToast.browser.tsx
++++ b/apps/web/src/components/KeybindingsToast.browser.tsx
+@@ -111,4 +111,5 @@ function createMinimalSnapshot(): OrchestrationReadModel {
+             text: "hello",
+             turnId: null,
++            sender: null,
+             streaming: false,
+             createdAt: NOW_ISO,
+diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
+index 9e0b8959..7780e275 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.tsx
+@@ -431,4 +431,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+                   </div>
+                   <p className="text-right text-[10px] text-muted-foreground/30">
++                    {row.message.sender && (
++                      <span className="text-primary/40">{row.message.sender} · </span>
++                    )}
+                     {formatTimestamp(row.message.createdAt, timestampFormat)}
+                   </p>
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index b7fde0c5..519252b1 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -542,4 +542,5 @@ export function GeneralSettingsPanel() {
+   >({});
+   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
++  const [isTokenRevealed, setIsTokenRevealed] = useState(false);
+   const refreshingRef = useRef(false);
+   const queryClient = useQueryClient();
+@@ -1372,4 +1373,85 @@ export function GeneralSettingsPanel() {
+       </SettingsSection>
+ 
++      <SettingsSection title="API Access">
++        <SettingsRow
++          title="Endpoint URL"
++          description="Connection details for remote agents using l6claw-cli."
++          control={
++            <div className="flex items-center gap-2">
++              <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
++                {serverConfigQuery.data
++                  ? `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`
++                  : "Loading..."}
++              </code>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => {
++                  if (!serverConfigQuery.data) return;
++                  void navigator.clipboard.writeText(
++                    `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`,
++                  );
++                }}
++              >
++                Copy
++              </Button>
++            </div>
++          }
++        />
++
++        <SettingsRow
++          title="Auth Token"
++          description="Secret token used to authenticate remote agent connections."
++          control={
++            <div className="flex items-center gap-2">
++              <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
++                {isTokenRevealed
++                  ? (serverConfigQuery.data?.authToken ?? "—")
++                  : "••••••••••••••••••••••••••••••••"}
++              </code>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => setIsTokenRevealed((v) => !v)}
++              >
++                {isTokenRevealed ? "Hide" : "Reveal"}
++              </Button>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => {
++                  void navigator.clipboard.writeText(serverConfigQuery.data?.authToken ?? "");
++                }}
++              >
++                Copy
++              </Button>
++            </div>
++          }
++        />
++
++        <SettingsRow
++          title="Persist across restarts"
++          description="Save the auth token to disk so it is restored when the server restarts."
++          control={
++            <Switch
++              checked={settings.authToken !== undefined}
++              onCheckedChange={(checked) => {
++                if (checked) {
++                  void updateSettings({
++                    authToken: serverConfigQuery.data?.authToken ?? undefined,
++                  });
++                } else {
++                  void ensureNativeApi().server.updateSettings({ authToken: null });
++                }
++              }}
++              aria-label="Persist auth token across restarts"
++            />
++          }
++        />
++      </SettingsSection>
++
+       <SettingsSection title="Advanced">
+         <SettingsRow
+diff --git a/apps/web/src/hooks/useSettings.ts b/apps/web/src/hooks/useSettings.ts
+index 3f804bc4..ed3182d5 100644
+--- a/apps/web/src/hooks/useSettings.ts
++++ b/apps/web/src/hooks/useSettings.ts
+@@ -36,5 +36,5 @@ import { normalizeCustomModelSlugs } from "~/modelSelection";
+ import { Predicate, Schema, Struct } from "effect";
+ import { DeepMutable } from "effect/Types";
+-import { deepMerge } from "@t3tools/shared/Struct";
++import { deepMerge, type DeepPartial } from "@t3tools/shared/Struct";
+ 
+ const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
+@@ -116,5 +116,5 @@ export function useUpdateSettings() {
+           return {
+             ...old,
+-            settings: deepMerge(old.settings, serverPatch),
++            settings: deepMerge(old.settings, serverPatch as DeepPartial<ServerSettings>),
+           };
+         });
+diff --git a/apps/web/src/store.test.ts b/apps/web/src/store.test.ts
+index 6e909b38..1b46e79e 100644
+--- a/apps/web/src/store.test.ts
++++ b/apps/web/src/store.test.ts
+@@ -416,4 +416,5 @@ describe("incremental orchestration updates", () => {
+         text: " world",
+         turnId: TurnId.makeUnsafe("turn-1"),
++        sender: null,
+         streaming: true,
+         createdAt: "2026-02-27T00:00:01.000Z",
+@@ -465,4 +466,5 @@ describe("incremental orchestration updates", () => {
+           text: "done",
+           turnId: TurnId.makeUnsafe("turn-1"),
++          sender: null,
+           streaming: false,
+           createdAt: "2026-02-27T00:00:03.000Z",
+@@ -544,4 +546,5 @@ describe("incremental orchestration updates", () => {
+         text: "final answer",
+         turnId,
++        sender: null,
+         streaming: false,
+         createdAt: "2026-02-27T00:00:03.000Z",
+diff --git a/apps/web/src/store.ts b/apps/web/src/store.ts
+index eff6a6fd..1d9eb8c7 100644
+--- a/apps/web/src/store.ts
++++ b/apps/web/src/store.ts
+@@ -109,4 +109,5 @@ function mapMessage(message: OrchestrationMessage): ChatMessage {
+     text: message.text,
+     turnId: message.turnId,
++    sender: message.sender ?? null,
+     createdAt: message.createdAt,
+     streaming: message.streaming,
+@@ -600,4 +601,5 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
+             : {}),
+           turnId: event.payload.turnId,
++          sender: event.payload.sender,
+           streaming: event.payload.streaming,
+           createdAt: event.payload.createdAt,
+diff --git a/apps/web/src/types.ts b/apps/web/src/types.ts
+index 0ebf1503..74565845 100644
+--- a/apps/web/src/types.ts
++++ b/apps/web/src/types.ts
+@@ -47,4 +47,5 @@ export interface ChatMessage {
+   attachments?: ChatAttachment[];
+   turnId?: TurnId | null;
++  sender?: string | null;
+   createdAt: string;
+   completedAt?: string | undefined;
+diff --git a/bun.lock b/bun.lock
+index e13245b7..6dfae97f 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -123,4 +123,19 @@
+       },
+     },
++    "packages/cli": {
++      "name": "@t3tools/cli",
++      "version": "0.0.1",
++      "bin": {
++        "l6claw-cli": "./dist/l6claw-cli",
++      },
++      "dependencies": {
++        "@effect/platform-node": "catalog:",
++        "effect": "catalog:",
++      },
++      "devDependencies": {
++        "@types/bun": "catalog:",
++        "typescript": "catalog:",
++      },
++    },
+     "packages/contracts": {
+       "name": "@t3tools/contracts",
+@@ -171,4 +186,5 @@
+   },
+   "trustedDependencies": [
++    "electron",
+     "node-pty",
+   ],
+@@ -667,4 +683,6 @@
+     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
+ 
++    "@t3tools/cli": ["@t3tools/cli@workspace:packages/cli"],
++
+     "@t3tools/contracts": ["@t3tools/contracts@workspace:packages/contracts"],
+ 
+diff --git a/package.json b/package.json
+index 6f14f7b7..9505fe18 100644
+--- a/package.json
++++ b/package.json
+@@ -73,5 +73,6 @@
+   },
+   "trustedDependencies": [
+-    "node-pty"
++    "node-pty",
++    "electron"
+   ]
+ }
+diff --git a/packages/cli/.gitignore b/packages/cli/.gitignore
+new file mode 100644
+index 00000000..849ddff3
+--- /dev/null
++++ b/packages/cli/.gitignore
+@@ -0,0 +1 @@
++dist/
+diff --git a/packages/cli/package.json b/packages/cli/package.json
+new file mode 100644
+index 00000000..56e61aa9
+--- /dev/null
++++ b/packages/cli/package.json
+@@ -0,0 +1,21 @@
++{
++  "name": "@t3tools/cli",
++  "version": "0.0.1",
++  "bin": {
++    "l6claw-cli": "./dist/l6claw-cli"
++  },
++  "type": "module",
++  "scripts": {
++    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
++    "dev": "bun run src/main.ts",
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@effect/platform-node": "catalog:",
++    "effect": "catalog:"
++  },
++  "devDependencies": {
++    "@types/bun": "catalog:",
++    "typescript": "catalog:"
++  }
++}
+diff --git a/packages/cli/src/commands/send.ts b/packages/cli/src/commands/send.ts
+new file mode 100644
+index 00000000..c59e93a0
+--- /dev/null
++++ b/packages/cli/src/commands/send.ts
+@@ -0,0 +1,298 @@
++import { Cause, Duration, Effect, Fiber, Option, Queue } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError } from "../ws/client";
++import type { WsPush } from "../ws/protocol";
++
++// ── Flags ────────────────────────────────────────────────────────────────
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL. Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const threadIdFlag = Flag.string("thread-id").pipe(
++  Flag.withDescription("Target thread by ID."),
++  Flag.optional,
++);
++const projectFlag = Flag.string("project").pipe(
++  Flag.withDescription("Target project by name (case-insensitive)."),
++  Flag.optional,
++);
++const threadFlag = Flag.string("thread").pipe(
++  Flag.withDescription("Target thread title (case-insensitive, requires --project)."),
++  Flag.optional,
++);
++const textFlag = Flag.string("text").pipe(Flag.withDescription("Message text to send."));
++const senderFlag = Flag.string("sender").pipe(
++  Flag.withDescription("Sender identity shown in the UI (max 32 chars)."),
++);
++const waitFlag = Flag.boolean("wait").pipe(
++  Flag.withDescription("Block until agent finishes responding."),
++  Flag.optional,
++);
++const timeoutFlag = Flag.integer("timeout").pipe(
++  Flag.withDescription("Max wait time in seconds (default: 86400, --wait only)."),
++  Flag.optional,
++);
++
++// ── Thread resolution types ──────────────────────────────────────────────
++
++interface SnapshotProject {
++  id: string;
++  title: string;
++}
++interface SnapshotThread {
++  id: string;
++  projectId: string;
++  title: string;
++  runtimeMode: string;
++  archivedAt?: string | null;
++  deletedAt?: string | null;
++  session?: { activeTurnId?: string | null; status?: string } | null;
++}
++interface ResolvedThread {
++  threadId: string;
++  runtimeMode: string;
++}
++
++function resolveThread(
++  snapshot: { projects: SnapshotProject[]; threads: SnapshotThread[] },
++  opts: {
++    threadId?: string | null;
++    project?: string | null;
++    thread?: string | null;
++  },
++): ResolvedThread {
++  if (opts.threadId) {
++    const found = snapshot.threads.find((t) => t.id === opts.threadId);
++    if (!found) {
++      console.error(`Thread not found: ${opts.threadId}`);
++      process.exit(1);
++    }
++    if (found.deletedAt || found.archivedAt) {
++      console.error(`Thread is archived or deleted: ${opts.threadId}`);
++      process.exit(1);
++    }
++    if (found.session?.activeTurnId) {
++      console.error("Thread has an active turn in progress");
++      process.exit(1);
++    }
++    return { threadId: found.id, runtimeMode: found.runtimeMode };
++  }
++  if (!opts.project || !opts.thread) {
++    console.error("Either --thread-id or both --project and --thread are required.");
++    process.exit(1);
++  }
++  const matchedProjects = snapshot.projects.filter(
++    (p) => p.title.toLowerCase() === opts.project!.toLowerCase(),
++  );
++  if (matchedProjects.length === 0) {
++    console.error(`Project not found: ${opts.project}`);
++    process.exit(1);
++  }
++  const projectIds = new Set(matchedProjects.map((p) => p.id));
++  const matchedThreads = snapshot.threads.filter(
++    (t) =>
++      projectIds.has(t.projectId) &&
++      t.title.toLowerCase() === opts.thread!.toLowerCase() &&
++      !t.archivedAt &&
++      !t.deletedAt,
++  );
++  if (matchedThreads.length === 0) {
++    console.error(`Thread not found: "${opts.thread}" in project "${opts.project}"`);
++    process.exit(1);
++  }
++  if (matchedThreads.length > 1) {
++    console.error(
++      `Multiple threads match: ${matchedThreads.map((t) => `"${t.title}" (${t.id})`).join(", ")}`,
++    );
++    process.exit(1);
++  }
++  const found = matchedThreads[0]!;
++  if (found.session?.activeTurnId) {
++    console.error("Thread has an active turn in progress");
++    process.exit(1);
++  }
++  return { threadId: found.id, runtimeMode: found.runtimeMode };
++}
++
++// ── Wait mode ────────────────────────────────────────────────────────────
++
++type TurnStatus = "running" | "completed" | "error" | "interrupted" | "timeout";
++
++function waitForTurn(
++  pushEvents: Queue.Dequeue<WsPush>,
++  threadId: string,
++  timeoutSec: number,
++): Effect.Effect<{ status: TurnStatus; turnId: string | null; messages: string[] }> {
++  return Effect.gen(function* () {
++    let turnId: string | null = null;
++    let sessionWasRunning = false;
++    const messages: string[] = [];
++    let status: TurnStatus = "running";
++
++    const drain = Effect.gen(function* () {
++      while (status === "running") {
++        const push = yield* Queue.take(pushEvents);
++        if (push.channel !== "orchestration.domainEvent") continue;
++        const event = push.data as {
++          type: string;
++          aggregateId: string;
++          payload: Record<string, unknown>;
++        };
++        if (event.aggregateId !== threadId) continue;
++
++        if (event.type === "thread.session-set") {
++          const session = event.payload["session"] as {
++            activeTurnId: string | null;
++            status: string;
++          } | null;
++          if (session?.activeTurnId && !turnId) {
++            turnId = session.activeTurnId;
++            sessionWasRunning = true;
++          }
++          if (sessionWasRunning && session) {
++            if (!session.activeTurnId) {
++              if (session.status === "error") status = "error";
++              else if (session.status === "stopped" || session.status === "interrupted")
++                status = "interrupted";
++              else if (session.status === "ready" || session.status === "idle")
++                status = "completed";
++            }
++          }
++        } else if (event.type === "thread.message-sent") {
++          const p = event.payload as {
++            role: string;
++            text: string;
++            streaming: boolean;
++          };
++          if (p.role === "assistant" && !p.streaming) {
++            messages.push(p.text);
++          }
++        } else if (event.type === "thread.turn-diff-completed") {
++          const p = event.payload as { status: string };
++          if (p.status === "ready") status = "completed";
++          else if (p.status === "error") status = "error";
++          else status = "interrupted";
++        }
++      }
++    });
++
++    const fiber = yield* Effect.forkChild(drain);
++
++    const timedOut = yield* Fiber.join(fiber).pipe(
++      Effect.timeoutOrElse({
++        duration: Duration.seconds(timeoutSec),
++        orElse: () => Effect.succeed("__timeout__" as const),
++      }),
++    );
++
++    return {
++      status: timedOut === "__timeout__" ? "timeout" : status,
++      turnId,
++      messages,
++    };
++  });
++}
++
++// ── Command ───────────────────────────────────────────────────────────────
++
++export const sendCommand = Command.make("send", {
++  url: urlFlag,
++  token: tokenFlag,
++  threadId: threadIdFlag,
++  project: projectFlag,
++  thread: threadFlag,
++  text: textFlag,
++  sender: senderFlag,
++  wait: waitFlag,
++  timeout: timeoutFlag,
++}).pipe(
++  Command.withDescription("Send a message to a thread, triggering the agent to act."),
++  Command.withHandler((opts) => {
++    const url = Option.getOrUndefined(opts.url) ?? process.env["T3CODE_URL"];
++    const token = Option.getOrUndefined(opts.token) ?? process.env["T3CODE_TOKEN"];
++    if (!url || !token) {
++      return Effect.sync(() => {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      });
++    }
++    return Effect.scoped(
++      Effect.gen(function* () {
++        const client = yield* connect(url, token);
++
++        // Always fetch snapshot first (for thread resolution + runtimeMode)
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: SnapshotProject[];
++          threads: SnapshotThread[];
++        };
++        const resolved = resolveThread(snapshot, {
++          threadId: Option.getOrNull(opts.threadId),
++          project: Option.getOrNull(opts.project),
++          thread: Option.getOrNull(opts.thread),
++        });
++
++        const commandId = crypto.randomUUID();
++        const messageId = crypto.randomUUID();
++        const command = {
++          type: "thread.turn.start",
++          commandId,
++          threadId: resolved.threadId,
++          message: {
++            messageId,
++            role: "user",
++            text: opts.text,
++            sender: opts.sender.slice(0, 32),
++            attachments: [],
++          },
++          runtimeMode: resolved.runtimeMode,
++          interactionMode: "default",
++          createdAt: new Date().toISOString(),
++        };
++
++        const isWait = Option.getOrElse(opts.wait, () => false) === true;
++        const timeoutSec = Option.getOrElse(opts.timeout, () => 86400);
++
++        if (isWait) {
++          // CRITICAL: subscribe to push events BEFORE dispatching to avoid race condition
++          const waitEffect = waitForTurn(client.pushEvents, resolved.threadId, timeoutSec);
++          const fiber = yield* Effect.forkChild(waitEffect);
++          yield* client.request("orchestration.dispatchCommand", { command });
++          const waitResult = yield* Fiber.join(fiber);
++
++          // Print collected assistant messages to stdout
++          for (const msg of waitResult.messages) {
++            console.log(msg);
++          }
++
++          const finalStatus = waitResult.status;
++          if (finalStatus !== "completed") {
++            console.error(JSON.stringify({ status: finalStatus, turnId: waitResult.turnId }));
++            process.exit(1);
++          }
++        } else {
++          yield* client.request("orchestration.dispatchCommand", { command });
++          console.log(JSON.stringify({ status: "accepted", turnId: null }));
++        }
++      }),
++    ).pipe(
++      Effect.catchCause((cause) =>
++        Effect.sync(() => {
++          const err = Cause.squash(cause);
++          const msg =
++            err instanceof WsConnectionError
++              ? err.message
++              : err instanceof Error
++                ? err.message
++                : String(err);
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        }),
++      ),
++    );
++  }),
++);
+diff --git a/packages/cli/src/commands/threads.ts b/packages/cli/src/commands/threads.ts
+new file mode 100644
+index 00000000..eb88fa0d
+--- /dev/null
++++ b/packages/cli/src/commands/threads.ts
+@@ -0,0 +1,134 @@
++import { Cause, Effect, Option } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError } from "../ws/client";
++
++interface ThreadRow {
++  projectName: string;
++  threadTitle: string;
++  threadId: string;
++  sessionStatus: string;
++}
++
++interface SnapshotProject {
++  id: string;
++  title: string;
++  deletedAt?: string | null;
++}
++
++interface SnapshotThread {
++  id: string;
++  projectId: string;
++  title: string;
++  archivedAt?: string | null;
++  deletedAt?: string | null;
++  session?: { status: string } | null;
++}
++
++function resolveThreadRows(snapshot: {
++  projects: SnapshotProject[];
++  threads: SnapshotThread[];
++}): ThreadRow[] {
++  const projectMap = new Map(
++    snapshot.projects.filter((p) => !p.deletedAt).map((p) => [p.id, p.title]),
++  );
++
++  return snapshot.threads
++    .filter((t) => !t.archivedAt && !t.deletedAt && projectMap.has(t.projectId))
++    .map((t) => ({
++      projectName: projectMap.get(t.projectId)!,
++      threadTitle: t.title,
++      threadId: t.id,
++      sessionStatus: t.session?.status ?? "idle",
++    }))
++    .toSorted(
++      (a, b) =>
++        a.projectName.localeCompare(b.projectName) || a.threadTitle.localeCompare(b.threadTitle),
++    );
++}
++
++function truncate(s: string, max: number): string {
++  return s.length > max ? `${s.slice(0, max - 3)}...` : s;
++}
++
++function pad(s: string, w: number): string {
++  return s.padEnd(w);
++}
++
++function formatTable(rows: ThreadRow[]): string {
++  if (rows.length === 0) return "No threads found.";
++  const H = {
++    project: "PROJECT",
++    thread: "THREAD",
++    id: "ID",
++    status: "STATUS",
++  };
++  const pw = Math.max(H.project.length, ...rows.map((r) => r.projectName.length));
++  const tw = Math.max(H.thread.length, ...rows.map((r) => truncate(r.threadTitle, 60).length));
++  const iw = Math.max(H.id.length, ...rows.map((r) => r.threadId.length));
++  const header = `${pad(H.project, pw)}  ${pad(H.thread, tw)}  ${pad(H.id, iw)}  ${H.status}`;
++  const lines = rows.map(
++    (r) =>
++      `${pad(r.projectName, pw)}  ${pad(truncate(r.threadTitle, 60), tw)}  ${pad(r.threadId, iw)}  ${r.sessionStatus}`,
++  );
++  return [header, ...lines].join("\n");
++}
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL of the T3 Code server. Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const jsonFlag = Flag.boolean("json").pipe(
++  Flag.withDescription("Output as JSON array."),
++  Flag.optional,
++);
++
++export const threadsCommand = Command.make("threads", {
++  url: urlFlag,
++  token: tokenFlag,
++  json: jsonFlag,
++}).pipe(
++  Command.withDescription("List all threads across all projects."),
++  Command.withHandler((opts) => {
++    const url = Option.getOrUndefined(opts.url) ?? process.env["T3CODE_URL"];
++    const token = Option.getOrUndefined(opts.token) ?? process.env["T3CODE_TOKEN"];
++    if (!url || !token) {
++      return Effect.sync(() => {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      });
++    }
++    return Effect.scoped(
++      Effect.gen(function* () {
++        const client = yield* connect(url, token);
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: SnapshotProject[];
++          threads: SnapshotThread[];
++        };
++        const rows = resolveThreadRows(snapshot);
++        if (Option.getOrElse(opts.json, () => false) === true) {
++          console.log(JSON.stringify(rows, null, 2));
++        } else {
++          console.log(formatTable(rows));
++        }
++      }),
++    ).pipe(
++      Effect.catchCause((cause) =>
++        Effect.sync(() => {
++          const err = Cause.squash(cause);
++          const msg =
++            err instanceof WsConnectionError
++              ? err.message
++              : err instanceof Error
++                ? err.message
++                : String(err);
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        }),
++      ),
++    );
++  }),
++);
+diff --git a/packages/cli/src/main.ts b/packages/cli/src/main.ts
+new file mode 100644
+index 00000000..4d4f44ea
+--- /dev/null
++++ b/packages/cli/src/main.ts
+@@ -0,0 +1,23 @@
++import { Effect } from "effect";
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Command } from "effect/unstable/cli";
++import { threadsCommand } from "./commands/threads";
++import { sendCommand } from "./commands/send";
++
++const cli = Command.make("l6claw-cli", {}).pipe(
++  Command.withDescription("Remote CLI for T3 Code"),
++  Command.withSubcommands([threadsCommand, sendCommand]),
++  Command.withHandler(() =>
++    Effect.sync(() => {
++      console.error("No command specified. Use --help.");
++      process.exit(1);
++    }),
++  ),
++);
++
++Command.run(cli, { version: "0.0.1" }).pipe(
++  Effect.scoped,
++  Effect.provide(NodeServices.layer),
++  NodeRuntime.runMain,
++);
+diff --git a/packages/cli/src/ws/client.ts b/packages/cli/src/ws/client.ts
+new file mode 100644
+index 00000000..470ad619
+--- /dev/null
++++ b/packages/cli/src/ws/client.ts
+@@ -0,0 +1,149 @@
++/**
++ * Thin WebSocket client for T3 Code.
++ * Handles connection, auth, request/response correlation, and push event queue.
++ */
++import { Effect, Queue, Deferred, Duration, Scope, Ref } from "effect";
++import type { WsRequest, WsResponse, WsPush, WsMessage } from "./protocol";
++import { isPush, isResponse } from "./protocol";
++
++export class WsConnectionError {
++  readonly _tag = "WsConnectionError";
++  constructor(readonly message: string) {}
++}
++
++export class WsRequestError {
++  readonly _tag = "WsRequestError";
++  constructor(readonly message: string) {}
++}
++
++export interface T3WsClient {
++  /** Send an RPC request and await the response (30s timeout) */
++  readonly request: (
++    tag: string,
++    params?: Record<string, unknown>,
++  ) => Effect.Effect<unknown, WsRequestError>;
++  /** Unbounded queue of all push events received from the server */
++  readonly pushEvents: Queue.Dequeue<WsPush>;
++  /** Close the WebSocket connection */
++  readonly close: Effect.Effect<void>;
++}
++
++/**
++ * Open a WebSocket connection to T3 Code and return a client.
++ * The connection is closed when the provided Scope finalizes.
++ */
++export const connect = (
++  url: string,
++  token: string,
++): Effect.Effect<T3WsClient, WsConnectionError, Scope.Scope> =>
++  Effect.gen(function* () {
++    const wsUrl = `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
++
++    const pending = yield* Ref.make(
++      new Map<string, Deferred.Deferred<WsResponse, WsRequestError>>(),
++    );
++    const pushQueue = yield* Queue.unbounded<WsPush>();
++
++    // Connect — resolve on open, reject on error or 401/400 close before open
++    const ws = yield* Effect.callback<WebSocket, WsConnectionError>((resume) => {
++      const socket = new WebSocket(wsUrl);
++      let opened = false;
++
++      socket.addEventListener("open", () => {
++        opened = true;
++        resume(Effect.succeed(socket));
++      });
++
++      socket.addEventListener("error", () => {
++        if (!opened) {
++          resume(Effect.fail(new WsConnectionError("WebSocket connection failed")));
++        }
++      });
++
++      socket.addEventListener("close", (event: CloseEvent) => {
++        if (!opened) {
++          const reason = event.reason || `Connection rejected (code ${event.code})`;
++          resume(Effect.fail(new WsConnectionError(reason)));
++        }
++      });
++    });
++
++    // Dispatch incoming messages to pending requests or push queue
++    ws.addEventListener("message", (event: MessageEvent) => {
++      let msg: WsMessage;
++      try {
++        msg = JSON.parse(String(event.data)) as WsMessage;
++      } catch {
++        return;
++      }
++
++      if (isPush(msg)) {
++        // Fire-and-forget offer; unbounded queue never blocks
++        Effect.runSync(Queue.offer(pushQueue, msg));
++      } else if (isResponse(msg)) {
++        Effect.runSync(
++          Ref.get(pending).pipe(
++            Effect.flatMap((map) => {
++              const deferred = map.get(msg.id);
++              if (!deferred) return Effect.void;
++              // Mutate: remove before resolving to avoid double-resolution
++              const next = new Map(map);
++              next.delete(msg.id);
++              return Ref.set(pending, next).pipe(
++                Effect.flatMap(() => Deferred.succeed(deferred, msg as WsResponse)),
++              );
++            }),
++          ),
++        );
++      }
++    });
++
++    // Reject all pending requests when connection closes
++    ws.addEventListener("close", () => {
++      Effect.runSync(
++        Ref.get(pending).pipe(
++          Effect.flatMap((map) => {
++            const effects = Array.from(map.values()).map((d) =>
++              Deferred.fail(d, new WsRequestError("Connection closed")),
++            );
++            return Ref.set(pending, new Map()).pipe(
++              Effect.flatMap(() => Effect.all(effects, { discard: true })),
++            );
++          }),
++        ),
++      );
++    });
++
++    yield* Effect.addFinalizer(() => Effect.sync(() => ws.close()));
++
++    let seq = 0;
++
++    const request = (
++      tag: string,
++      params?: Record<string, unknown>,
++    ): Effect.Effect<unknown, WsRequestError> =>
++      Effect.gen(function* () {
++        const id = `cli-${++seq}`;
++        const deferred = yield* Deferred.make<WsResponse, WsRequestError>();
++        yield* Ref.update(pending, (map) => new Map(map).set(id, deferred));
++
++        const envelope: WsRequest = { id, body: { _tag: tag, ...params } };
++        ws.send(JSON.stringify(envelope));
++
++        const response = yield* Effect.timeoutOrElse(Deferred.await(deferred), {
++          duration: Duration.seconds(30),
++          orElse: () => Effect.fail(new WsRequestError(`Request timed out: ${tag}`)),
++        });
++
++        if (response.error) {
++          return yield* Effect.fail(new WsRequestError(response.error.message));
++        }
++        return response.result;
++      });
++
++    return {
++      request,
++      pushEvents: pushQueue,
++      close: Effect.sync(() => ws.close()),
++    } satisfies T3WsClient;
++  });
+diff --git a/packages/cli/src/ws/protocol.ts b/packages/cli/src/ws/protocol.ts
+new file mode 100644
+index 00000000..13e1f427
+--- /dev/null
++++ b/packages/cli/src/ws/protocol.ts
+@@ -0,0 +1,35 @@
++/**
++ * Wire protocol types matching T3 Code WebSocket format.
++ * Kept minimal — only what the CLI needs.
++ */
++
++/** Client → Server request envelope */
++export interface WsRequest {
++  readonly id: string;
++  readonly body: Record<string, unknown> & { readonly _tag: string };
++}
++
++/** Server → Client response envelope */
++export interface WsResponse {
++  readonly id: string;
++  readonly result?: unknown;
++  readonly error?: { readonly message: string };
++}
++
++/** Server → Client push envelope */
++export interface WsPush {
++  readonly type: "push";
++  readonly sequence: number;
++  readonly channel: string;
++  readonly data: unknown;
++}
++
++export type WsMessage = WsResponse | WsPush;
++
++export function isPush(msg: WsMessage): msg is WsPush {
++  return "type" in msg && (msg as WsPush).type === "push";
++}
++
++export function isResponse(msg: WsMessage): msg is WsResponse {
++  return "id" in msg && !("type" in msg && (msg as { type?: unknown }).type === "push");
++}
+diff --git a/packages/cli/tsconfig.json b/packages/cli/tsconfig.json
+new file mode 100644
+index 00000000..5a24989c
+--- /dev/null
++++ b/packages/cli/tsconfig.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "outDir": "dist",
++    "rootDir": "src"
++  },
++  "include": ["src"]
++}
+diff --git a/packages/contracts/src/orchestration.ts b/packages/contracts/src/orchestration.ts
+index a780a55c..0f3ac3af 100644
+--- a/packages/contracts/src/orchestration.ts
++++ b/packages/contracts/src/orchestration.ts
+@@ -164,4 +164,5 @@ export const OrchestrationMessage = Schema.Struct({
+   turnId: Schema.NullOr(TurnId),
+   streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   createdAt: IsoDateTime,
+   updatedAt: IsoDateTime,
+@@ -398,4 +399,5 @@ export const ThreadTurnStartCommand = Schema.Struct({
+     text: Schema.String,
+     attachments: Schema.Array(ChatAttachment),
++    sender: Schema.optional(Schema.String),
+   }),
+   modelSelection: Schema.optional(ModelSelection),
+@@ -418,4 +420,5 @@ const ClientThreadTurnStartCommand = Schema.Struct({
+     text: Schema.String,
+     attachments: Schema.Array(UploadChatAttachment),
++    sender: Schema.optional(Schema.String),
+   }),
+   modelSelection: Schema.optional(ModelSelection),
+@@ -707,4 +710,5 @@ export const ThreadMessageSentPayload = Schema.Struct({
+   turnId: Schema.NullOr(TurnId),
+   streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   createdAt: IsoDateTime,
+   updatedAt: IsoDateTime,
+diff --git a/packages/contracts/src/server.ts b/packages/contracts/src/server.ts
+index 08910c3e..fe62a51e 100644
+--- a/packages/contracts/src/server.ts
++++ b/packages/contracts/src/server.ts
+@@ -74,4 +74,7 @@ export const ServerConfig = Schema.Struct({
+   availableEditors: Schema.Array(EditorId),
+   settings: ServerSettings,
++  host: Schema.optional(Schema.String),
++  port: Schema.optional(Schema.Number),
++  authToken: Schema.optional(Schema.String),
+ });
+ export type ServerConfig = typeof ServerConfig.Type;
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 51fe683f..9f2a016f 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -84,4 +84,7 @@ export const ServerSettings = Schema.Struct({
+   ),
+ 
++  // Auth
++  authToken: Schema.optional(Schema.String),
++
+   // Provider specific settings
+   providers: Schema.Struct({
+@@ -146,4 +149,5 @@ export const ServerSettingsPatch = Schema.Struct({
+   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
++  authToken: Schema.optionalKey(Schema.NullOr(Schema.String)),
+   providers: Schema.optionalKey(
+     Schema.Struct({
