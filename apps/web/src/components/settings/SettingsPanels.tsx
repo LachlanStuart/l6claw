@@ -60,6 +60,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
   useServerAvailableEditors,
+  useServerConfig,
   useServerKeybindingsConfigPath,
   useServerObservability,
   useServerProviders,
@@ -549,6 +550,7 @@ export function GeneralSettingsPanel() {
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isTokenRevealed, setIsTokenRevealed] = useState(false);
+  const serverConfig = useServerConfig();
   const refreshingRef = useRef(false);
   const modelListRefs = useRef<Partial<Record<ProviderKind, HTMLDivElement | null>>>({});
   const refreshProviders = useCallback(() => {
@@ -1419,8 +1421,8 @@ export function GeneralSettingsPanel() {
           control={
             <div className="flex items-center gap-2">
               <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
-                {serverConfigQuery.data
-                  ? `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`
+                {serverConfig
+                  ? `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`
                   : "Loading..."}
               </code>
               <Button
@@ -1428,9 +1430,9 @@ export function GeneralSettingsPanel() {
                 size="xs"
                 variant="outline"
                 onClick={() => {
-                  if (!serverConfigQuery.data) return;
+                  if (!serverConfig) return;
                   void navigator.clipboard.writeText(
-                    `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`,
+                    `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`,
                   );
                 }}
               >
@@ -1447,7 +1449,7 @@ export function GeneralSettingsPanel() {
             <div className="flex items-center gap-2">
               <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
                 {isTokenRevealed
-                  ? (serverConfigQuery.data?.authToken ?? "—")
+                  ? (serverConfig?.authToken ?? "—")
                   : "••••••••••••••••••••••••••••••••"}
               </code>
               <Button
@@ -1463,7 +1465,7 @@ export function GeneralSettingsPanel() {
                 size="xs"
                 variant="outline"
                 onClick={() => {
-                  void navigator.clipboard.writeText(serverConfigQuery.data?.authToken ?? "");
+                  void navigator.clipboard.writeText(serverConfig?.authToken ?? "");
                 }}
               >
                 Copy
@@ -1481,7 +1483,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) => {
                 if (checked) {
                   void updateSettings({
-                    authToken: serverConfigQuery.data?.authToken ?? undefined,
+                    authToken: serverConfig?.authToken ?? undefined,
                   });
                 } else {
                   void ensureNativeApi().server.updateSettings({ authToken: null });

@@ -247,9 +247,7 @@ export const resolveServerConfig = (
     const authTokenFromFlags = resolveOptionPrecedence(
       flags.authToken,
       Option.fromUndefinedOr(env.authToken),
-      Option.flatMap(bootstrapEnvelope, (bootstrap) =>
-        Option.fromUndefinedOr(bootstrap.authToken),
-      ),
+      Option.flatMap(bootstrapEnvelope, (bootstrap) => Option.fromUndefinedOr(bootstrap.authToken)),
     );
     // If no token from flags/env/bootstrap, try settings.json; if still nothing, auto-generate ephemeral token
     const authToken: string = yield* Effect.gen(function* () {

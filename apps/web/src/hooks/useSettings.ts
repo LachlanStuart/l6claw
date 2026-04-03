@@ -108,7 +108,9 @@ export function useUpdateSettings() {
       if (Object.keys(serverPatch).length > 0) {
         const currentServerConfig = getServerConfig();
         if (currentServerConfig) {
-          applySettingsUpdated(deepMerge(currentServerConfig.settings, serverPatch));
+          applySettingsUpdated(
+            deepMerge(currentServerConfig.settings, serverPatch as Record<string, unknown>),
+          );
         }
         // Fire-and-forget RPC — push will reconcile on success
         void ensureNativeApi().server.updateSettings(serverPatch);

@@ -64,7 +64,6 @@ export const migrationEntries = [
   [16, "CanonicalizeModelSelections", Migration0016],
   [17, "ProjectionThreadsArchivedAt", Migration0017],
   [18, "ProjectionThreadsArchivedAtIndex", Migration0018],
-<<<<<<< HEAD
   [19, "ProjectionSnapshotLookupIndexes", Migration0019],
 ] as const;
 
