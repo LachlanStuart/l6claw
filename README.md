@@ -1,3 +1,16 @@
+# L6 Claw (built on [T3 Code](https://github.com/pingdotgg/t3code))
+
+L6 Claw is a personal fork of T3 Code that extends it with agentic capabilities for multi-agent orchestration and remote control. This fork regularly merges from upstream to inherit T3 Code's ongoing development, while maintaining its own feature set via self-contained, spec-driven additions.
+
+Huge thanks to the T3 Code team for building and open-sourcing the foundation this project is built on.
+
+### Implemented Features
+
+- [00 - Fork Setup](.l6-specs/00-fork-setup.md) — Rebranding, fork migration isolation, and development conventions
+- [01 - Remote CLI](.l6-specs/01-remote-cli.md) — CLI tool for remote agents to interact with threads over WebSocket
+
+---
+
 # T3 Code
 
 T3 Code is a minimal web GUI for coding agents (currently Codex and Claude, more coming soon).

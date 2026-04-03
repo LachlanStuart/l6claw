@@ -1,0 +1,3650 @@
+diff --git a/.l6-specs/l6-remote-cli.md b/.l6-specs/l6-remote-cli.md
+new file mode 100644
+index 00000000..4804a926
+--- /dev/null
++++ b/.l6-specs/l6-remote-cli.md
+@@ -0,0 +1,531 @@
++# L6 Remote CLI Spec
++
++**Date:** 2026-04-02
++**Status:** Draft
++
++## Overview
++
++A standalone CLI tool (`l6claw-cli`) that enables remote agents to interact with T3 Code threads over the network. The CLI connects to the T3 Code WebSocket server, sends commands using the existing RPC protocol, and listens for push events to track turn progress.
++
++The CLI acts as a security boundary: it exposes an allowlist of safe operations and does not permit approvals, runtime mode changes, settings mutations, thread deletion, or any other privileged operations. The remote agent can read thread state and send messages — nothing more.
++
++## Terminology
++
++| Term | Definition |
++|------|-----------|
++| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads. |
++| **Thread** | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses. |
++| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI. |
++| **Turn** | A single user-message-to-agent-response cycle. A turn is triggered by sending a message. |
++| **Sender** | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the T3 Code web interface. |
++
++---
++
++## CLI Interface Contract
++
++### Binary Name
++
++```
++l6claw-cli
++```
++
++### Global Options
++
++| Flag | Env Var | Required | Description |
++|------|---------|----------|-------------|
++| `--url <url>` | `T3CODE_URL` | Yes | WebSocket URL of the T3 Code server (e.g. `ws://100.64.1.2:3773`) |
++| `--token <string>` | `T3CODE_TOKEN` | Yes | Auth token for the WebSocket connection |
++
++Flag values take precedence over environment variables.
++
++### Command: `threads`
++
++List all threads across all projects.
++
++```
++l6claw-cli threads [--json]
++```
++
++**Options:**
++
++| Flag | Default | Description |
++|------|---------|-------------|
++| `--json` | `false` | Output as JSON array instead of table |
++
++**Table output format:**
++
++```
++PROJECT          THREAD                                                       ID                                   STATUS
++my-project       Fix the login bug                                            abc123-def4-5678-9012-abcdef345678   running
++my-project       Implement caching layer                                      def456-abc1-2345-6789-fedcba987654   ready
++other-project    Set up CI pipeline for the new monorepo structure that we...  789abc-def0-1234-5678-abcdef012345   idle
++```
++
++**Table output rules:**
++- Thread titles are truncated to 60 characters with `...` suffix if they exceed that length
++- Archived threads (where `archivedAt` is non-null) are excluded
++- Deleted threads (where `deletedAt` is non-null) are excluded
++- Status is derived from `thread.session.status` if a session exists, otherwise `"idle"`
++
++**JSON output format:**
++
++```json
++[
++  {
++    "projectName": "my-project",
++    "threadTitle": "Fix the login bug",
++    "threadId": "abc123-def4-5678-9012-abcdef345678",
++    "sessionStatus": "running"
++  }
++]
++```
++
++**JSON output rules:**
++- Thread titles are NOT truncated in JSON output (full title is included)
++- Same exclusion rules as table output (no archived, no deleted)
++- Array is sorted by project name (ascending), then thread title (ascending)
++
++**Implementation:** Connects to WebSocket, calls `orchestration.getSnapshot` (existing RPC method), formats the `OrchestrationReadModel` response, disconnects.
++
++### Command: `send`
++
++Send a message to a thread, triggering the agent to act.
++
++```
++l6claw-cli send --thread-id <id> --text <message> --sender <name> [--wait] [--timeout <seconds>]
++l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--wait] [--timeout <seconds>]
++```
++
++**Options:**
++
++| Flag | Required | Default | Description |
++|------|----------|---------|-------------|
++| `--thread-id <id>` | One of `--thread-id` or (`--project` + `--thread`) required | | Target thread by ID |
++| `--project <name>` | See above | | Target project by name (case-insensitive match) |
++| `--thread <name>` | See above | | Target thread by title (case-insensitive match, must pair with `--project`) |
++| `--text <message>` | Yes | | Message text to send |
++| `--sender <name>` | Yes | | Sender identity displayed in the UI (max 32 characters) |
++| `--wait` | No | `false` | Block until the agent finishes responding |
++| `--timeout <seconds>` | No | `86400` (24 hours) | Maximum wait time in seconds (only applies when `--wait` is set) |
++
++**Thread resolution:**
++
++Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI always fetches `orchestration.getSnapshot` first to:
++1. Validate the thread exists
++2. Read the thread's current `runtimeMode` (echoed back in the command to avoid changing it)
++3. Check the thread does not already have an active turn running
++
++**When using `--project` + `--thread`:**
++1. Find the project where `project.title` matches `--project` (case-insensitive)
++2. Find the thread where `thread.title` matches `--thread` (case-insensitive) within that project
++3. If zero matches: exit 1 with error message
++4. If multiple matches: exit 1 with error listing the ambiguous matches
++
++**When using `--thread-id`:**
++1. Find the thread where `thread.id` matches `--thread-id`
++2. If not found: exit 1 with error message
++
++**Pre-send validation:**
++- If the resolved thread has `session.activeTurnId !== null` (a turn is already running): exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
++
++**Fire-and-forget mode (no `--wait`):**
++
++Dispatches the command and prints acknowledgment to stdout:
++
++```json
++{"status": "accepted", "turnId": null}
++```
++
++Note: `turnId` is null because turn IDs are assigned asynchronously by the provider adapter, not at command dispatch time. Exit code 0.
++
++**Wait mode (`--wait`):**
++
++Dispatches the command, subscribes to push events, and blocks until the turn completes:
++
++- **Success:** prints each assistant message text to stdout (one per line, in order), exit code 0
++- **Error:** prints any assistant text collected so far to stdout, prints error info to stderr as `{"status": "error", "turnId": "<id>"}`, exit code 1
++- **Timeout:** prints any assistant text collected so far to stdout, prints to stderr as `{"status": "timeout", "turnId": "<id>"}`, exit code 1
++- **Interrupted:** same pattern, stderr `{"status": "interrupted", "turnId": "<id>"}`, exit code 1
++
++**Command construction:**
++
++The CLI constructs a `thread.turn.start` orchestration command:
++
++```json
++{
++  "type": "thread.turn.start",
++  "commandId": "<generated-uuid>",
++  "threadId": "<resolved-thread-id>",
++  "message": {
++    "messageId": "<generated-uuid>",
++    "role": "user",
++    "text": "<--text value>",
++    "sender": "<--sender value>",
++    "attachments": []
++  },
++  "runtimeMode": "<echoed-from-thread>",
++  "interactionMode": "default",
++  "createdAt": "<iso-datetime>"
++}
++```
++
++Note: `runtimeMode` is read from the thread's current state (via the snapshot) and echoed back in the command. This ensures the CLI never changes a thread's runtime mode. If the thread has no session yet, use the thread's `runtimeMode` field. The CLI does not expose runtime mode configuration as a security constraint.
++
++---
++
++## Server-Side Changes
++
++### 1. Sender Field on Messages
++
++**Schema addition in `packages/contracts/src/orchestration.ts`:**
++
++Add `sender` to `OrchestrationMessage`:
++
++```typescript
++// New field on OrchestrationMessage schema
++sender: Schema.NullOr(Schema.String)  // null for UI-sent messages
++```
++
++| Field | Type | Default | Constraint |
++|-------|------|---------|------------|
++| `sender` | `string \| null` | `null` | Max 32 characters, truncated server-side if exceeded |
++
++**Propagation path:**
++
++1. `ThreadTurnStartCommand.message` — add optional `sender` field (string)
++2. `ThreadMessageSentPayload` — add `sender` field (string | null)
++3. Orchestration decider — pass `sender` from command to event payload
++4. Projection pipeline — persist `sender` to message storage
++5. Read model / `orchestration.getSnapshot` — include `sender` on `OrchestrationMessage`
++6. WebSocket push events — `sender` included automatically (it's part of the message payload in domain events)
++
++Messages sent from the T3 Code web UI omit the `sender` field (or send null), so they render exactly as they do today.
++
++### 2. Auth Token Persistence
++
++**New field in `ServerSettings` schema (`packages/contracts/src/settings.ts`):**
++
++```typescript
++// New field on ServerSettings
++authToken: Schema.optional(Schema.String)
++```
++
++**Token lifecycle:**
++
++| Priority | Source | Persistence |
++|----------|--------|-------------|
++| 1 (highest) | `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag | Never persisted (runtime only) |
++| 2 | `authToken` field in `settings.json` | Persisted (user opted in) |
++| 3 (lowest) | Auto-generated on startup | In-memory only (ephemeral, changes each restart) |
++
++**Auto-generation:** On startup, if no token is available from priorities 1 or 2, generate a cryptographically random 32-byte hex string and hold it in memory for the session.
++
++**Persistence opt-in:** The UI provides a checkbox to persist the current token. When checked, the token is written to `settings.json`. When unchecked, the token is removed from `settings.json` (continues working for current session, regenerated on next restart).
++
++---
++
++## UI Changes
++
++### 1. Sender Indicator on Messages
++
++**Location:** User message component in the messages timeline (currently `MessagesTimeline.tsx`).
++
++**Rendering rule:** If `message.sender` is non-null and `message.role` is `"user"`, display the sender name inline, immediately to the left of the timestamp.
++
++**Styling:**
++- No border, no background, no pill/badge
++- Muted accent colour (distinct from the timestamp colour but similarly understated)
++- Same font size and weight as the timestamp
++- The sender text and timestamp together form a single visual line
++
++**When `sender` is null:** No change to existing rendering. Messages from the T3 Code UI appear exactly as they do today.
++
++### 2. API Access Section in Settings
++
++**Location:** Settings view in the web app.
++
++**Contents:**
++
++| Element | Description |
++|---------|-------------|
++| **Endpoint URL** | Read-only text showing `ws://<host>:<port>` computed from the server's actual bind address and port |
++| **Auth Token** | Read-only text field, masked by default, with reveal and copy buttons |
++| **Persist checkbox** | "Persist across restarts" — toggles whether the token is saved to `settings.json` |
++
++The token field is always read-only in the UI. To use a custom token, set it via the `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag.
++
++---
++
++## Wire Protocol Details
++
++The CLI uses the existing T3 Code WebSocket protocol. No new RPC methods or push channels are required.
++
++### Connection
++
++```
++ws://<host>:<port>/?token=<auth-token>
++```
++
++The `token` query parameter is validated during the HTTP upgrade. If invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
++
++### Request Format (Client to Server)
++
++```json
++{
++  "id": "<request-uuid>",
++  "body": {
++    "_tag": "<method-name>",
++    ...method-specific fields
++  }
++}
++```
++
++### Response Format (Server to Client)
++
++```json
++{
++  "id": "<matching-request-uuid>",
++  "result": ...success payload,
++  "error": { "message": "..." }
++}
++```
++
++Exactly one of `result` or `error` is present.
++
++### Push Format (Server to Client, unsolicited)
++
++```json
++{
++  "type": "push",
++  "sequence": 0,
++  "channel": "<channel-name>",
++  "data": ...channel-specific payload
++}
++```
++
++### RPC Methods Used by the CLI
++
++#### `orchestration.getSnapshot`
++
++Returns the full `OrchestrationReadModel` containing all projects and threads.
++
++**Request:**
++```json
++{
++  "id": "...",
++  "body": { "_tag": "orchestration.getSnapshot" }
++}
++```
++
++**Response result:** `OrchestrationReadModel` (see schema above).
++
++#### `orchestration.dispatchCommand`
++
++Dispatches an orchestration command. The CLI uses this with `thread.turn.start` commands.
++
++**Request:**
++```json
++{
++  "id": "...",
++  "body": {
++    "_tag": "orchestration.dispatchCommand",
++    "command": {
++      "type": "thread.turn.start",
++      "commandId": "<uuid>",
++      "threadId": "<thread-id>",
++      "message": {
++        "messageId": "<uuid>",
++        "role": "user",
++        "text": "...",
++        "sender": "...",
++        "attachments": []
++      },
++      "runtimeMode": "full-access",
++      "interactionMode": "default",
++      "createdAt": "<iso-datetime>"
++    }
++  }
++}
++```
++
++**Response result:** Acknowledgment (command accepted).
++
++### Push Channels Consumed by the CLI
++
++The CLI only needs to listen to the `orchestration.domainEvent` channel when in `--wait` mode.
++
++#### Turn Completion Detection (Wait Mode)
++
++After dispatching the command, the CLI filters push events where `channel === "orchestration.domainEvent"` and `data.aggregateId === threadId`.
++
++**Event correlation flow:**
++
++1. CLI knows: `threadId`, `commandId`, `messageId` (all generated before dispatch)
++2. **Subscribe to push events before dispatching the command** (prevents race conditions)
++3. Dispatch `thread.turn.start` command
++4. Watch for `thread.session-set` events on the target thread where `session.activeTurnId` becomes non-null — this reveals the server-assigned `turnId`
++5. Collect `thread.message-sent` events where `role === "assistant"` on the target thread
++6. Detect completion via:
++   - `thread.turn-diff-completed` event with matching thread (definitive completion signal, carries `completedAt`)
++   - OR `thread.session-set` where `session.status` transitions from `"running"` to `"ready"`, `"idle"`, `"stopped"`, or `"error"` and `session.activeTurnId` becomes null
++
++**Relevant event types and their payloads:**
++
++| Event Type | Key Payload Fields | Meaning |
++|-----------|-------------------|---------|
++| `thread.message-sent` | `threadId`, `messageId`, `role`, `text`, `turnId`, `streaming` | A message was sent. `role: "assistant"` + `streaming: false` = final assistant text. |
++| `thread.session-set` | `threadId`, `session.status`, `session.activeTurnId` | Session state changed. `activeTurnId: null` after being non-null = turn ended. |
++| `thread.turn-diff-completed` | `threadId`, `turnId`, `completedAt`, `status` | Turn checkpoint complete. `status: "ready"` = success, `"error"` = error, `"missing"` = interrupted. |
++
++**Assistant message collection:**
++
++During wait mode, the CLI accumulates text from `thread.message-sent` events where:
++- `aggregateId` matches the target `threadId`
++- `payload.role === "assistant"`
++- `payload.streaming === false` (only final/complete messages, not streaming fragments)
++
++A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
++
++---
++
++## Package Structure
++
++```
++packages/cli/
++  package.json
++  src/
++    main.ts          # Entry point, @effect/cli command definitions
++    commands/
++      threads.ts     # `threads` command implementation
++      send.ts        # `send` command implementation
++    ws/
++      client.ts      # WebSocket connection, auth, request/response, push subscription
++      protocol.ts    # Message framing, serialisation, correlation
++  tsconfig.json
++```
++
++**package.json scripts:**
++
++```json
++{
++  "name": "@t3tools/cli",
++  "scripts": {
++    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
++    "dev": "bun run src/main.ts"
++  }
++}
++```
++
++**Framework:** `@effect/cli` for command/option parsing, consistent with the rest of the codebase's use of Effect.
++
++**Runtime:** Bun. The compiled binary has no external runtime dependencies.
++
++---
++
++## Configuration File Specification
++
++### settings.json Changes
++
++**File location:** `<stateDir>/settings.json` (typically `~/.t3/userdata/settings.json` or `~/.t3/dev/settings.json`)
++
++**New field:**
++
++```json
++{
++  "authToken": "a1b2c3d4e5f6..."
++}
++```
++
++| Field | Type | Presence | Description |
++|-------|------|----------|-------------|
++| `authToken` | `string` | Optional — only present when user has opted to persist | The auth token for WebSocket connections. When absent, the server generates an ephemeral token on each startup. |
++
++This field is added or removed by the UI "Persist across restarts" checkbox. It is never auto-written by the server.
++
++### Existing Configuration (No Changes)
++
++The following existing configuration options are relevant but require no changes:
++
++| Config | Source | Default | Description |
++|--------|--------|---------|-------------|
++| `T3CODE_PORT` / `--port` | Env var / CLI flag | `3773` | Server port |
++| `T3CODE_HOST` / `--host` | Env var / CLI flag | `undefined` (all interfaces in web mode, `127.0.0.1` in desktop mode) | Bind address |
++| `T3CODE_AUTH_TOKEN` / `--auth-token` | Env var / CLI flag | None | Auth token override (takes precedence over persisted token) |
++
++---
++
++## Security Model
++
++The CLI is a **security boundary** that exposes only safe operations to remote agents.
++
++### Allowed Operations
++
++| Operation | RPC Method | Risk |
++|-----------|-----------|------|
++| List threads (read-only) | `orchestration.getSnapshot` | None — read-only snapshot of project/thread metadata and messages |
++| Send user message | `orchestration.dispatchCommand` (`thread.turn.start`) | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
++
++### Explicitly Disallowed Operations
++
++The CLI does not expose and must not be extended to expose:
++
++| Operation | Why Disallowed |
++|-----------|---------------|
++| Approve/decline tool execution | Remote agent must not be able to bypass human approval gates |
++| Change runtime mode | Remote agent must not escalate a thread from `approval-required` to `full-access` |
++| Delete/archive threads | Destructive operation, local user only |
++| Modify settings | Server configuration is local user only |
++| Create/delete projects | Workspace management is local user only |
++| Write files | Direct filesystem access is local user only |
++| Terminal access | Shell access is local user only |
++
++### Trust Model
++
++- Anyone with the auth token is trusted to perform allowed operations
++- The token is the sole authentication mechanism
++- Network security (Tailnet WireGuard encryption, ACLs) is assumed to provide transport security
++- The sender field is self-declared and trusted — there is no server-side identity verification beyond the token
++
++---
++
++## Error Handling
++
++### CLI Exit Codes
++
++| Code | Meaning |
++|------|---------|
++| 0 | Success |
++| 1 | Error (connection failure, auth failure, timeout, command rejected, thread not found, ambiguous match) |
++
++### Error Output
++
++All errors are printed to stderr as human-readable messages. In `--wait` mode, structured status is also printed to stderr as JSON (see `send` command spec above).
++
++### Connection Errors
++
++| Scenario | Behavior |
++|----------|----------|
++| Server unreachable | Exit 1 with "Connection failed: <url>" |
++| Auth rejected (401) | Exit 1 with "Authentication failed: invalid token" |
++| Connection lost during wait | Exit 1 with partial output + `{"status": "error", "turnId": "..."}` |
++
++### Send Errors
++
++| Scenario | Behavior |
++|----------|----------|
++| Thread not found | Exit 1 with "Thread not found: <id or name>" |
++| Ambiguous name match | Exit 1 with "Multiple threads match: <list>" |
++| Thread has active turn | Exit 1 with "Thread has an active turn in progress" |
++| Command rejected by server | Exit 1 with server error message |
++
++---
++
++## Future Considerations (Not In Scope)
++
++These are documented for context but are explicitly out of the initial implementation:
++
++- **Read-only thread inspection commands** (e.g., `l6claw-cli thread <id>` to view messages, tool calls, activities) — noted as a likely future addition
++- **REST API** — if needed later, can be added as HTTP routes on the existing server calling the same orchestration dispatch pipeline
++- **Polling endpoint for async turns** — a `GET /api/turns/{turnId}/status` style endpoint could supplement the fire-and-forget mode
++- **Thread creation via CLI** — remote agents can only send to existing threads
++- **Multiple API keys with named identities** — current model uses a single token with self-declared sender names
+diff --git a/apps/server/src/main.ts b/apps/server/src/main.ts
+index 019783c2..792bcb98 100644
+--- a/apps/server/src/main.ts
++++ b/apps/server/src/main.ts
+@@ -7,4 +7,5 @@
+  * @module CliConfig
+  */
++import { randomBytes } from "node:crypto";
+ import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
+ import { Command, Flag } from "effect/unstable/cli";
+@@ -231,5 +232,5 @@ const ServerConfigLive = (input: CliInput) =>
+         ),
+       );
+-      const authToken = resolveOptionPrecedence(
++      const authTokenFromFlags = resolveOptionPrecedence(
+         input.authToken,
+         Option.fromUndefinedOr(env.authToken),
+@@ -238,4 +239,26 @@ const ServerConfigLive = (input: CliInput) =>
+         ),
+       );
++
++      // If no token from flags/env/bootstrap, try settings.json; if still nothing, auto-generate ephemeral token
++      const authToken: Option.Option<string> = yield* Effect.gen(function* () {
++        if (Option.isSome(authTokenFromFlags)) {
++          return authTokenFromFlags;
++        }
++        const fs = yield* FileSystem.FileSystem;
++        const fromSettings = yield* fs.readFileString(derivedPaths.settingsPath).pipe(
++          Effect.map((raw) => {
++            try {
++              const parsed = JSON.parse(raw) as Record<string, unknown>;
++              return Option.fromUndefinedOr(parsed.authToken as string | undefined);
++            } catch {
++              return Option.none<string>();
++            }
++          }),
++          Effect.orElseSucceed(() => Option.none<string>()),
++        );
++        return Option.isSome(fromSettings)
++          ? fromSettings
++          : Option.some(randomBytes(32).toString("hex"));
++      });
+       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
+         input.autoBootstrapProjectFromCwd,
+@@ -282,5 +305,5 @@ const ServerConfigLive = (input: CliInput) =>
+         devUrl,
+         noBrowser,
+-        authToken: Option.getOrUndefined(authToken),
++        authToken: Option.getOrThrow(authToken),
+         autoBootstrapProjectFromCwd,
+         logWebSocketEvents,
+diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+index f0f2ccab..989b7fdc 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+@@ -650,4 +650,5 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+             text: nextText,
+             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
++            sender: event.payload.sender,
+             isStreaming: event.payload.streaming,
+             createdAt: existingMessage?.createdAt ?? event.payload.createdAt,
+diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+index 32143d75..b03033bc 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+@@ -288,4 +288,5 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+               text: "hello from projection",
+               turnId: asTurnId("turn-1"),
++              sender: null,
+               streaming: false,
+               createdAt: "2026-02-24T00:00:04.000Z",
+diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+index f951c54b..dc4c2d17 100644
+--- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
++++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
+@@ -195,4 +195,5 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+           attachments_json AS "attachments",
+           is_streaming AS "isStreaming",
++          sender,
+           created_at AS "createdAt",
+           updated_at AS "updatedAt"
+@@ -437,4 +438,5 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+               ...(row.attachments !== null ? { attachments: row.attachments } : {}),
+               turnId: row.turnId,
++              sender: row.sender,
+               streaming: row.isStreaming === 1,
+               createdAt: row.createdAt,
+diff --git a/apps/server/src/orchestration/decider.ts b/apps/server/src/orchestration/decider.ts
+index 22f5bcb2..e41e4342 100644
+--- a/apps/server/src/orchestration/decider.ts
++++ b/apps/server/src/orchestration/decider.ts
+@@ -357,4 +357,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: null,
+           streaming: false,
++          sender: command.message.sender ? command.message.sender.slice(0, 32) : null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+@@ -546,4 +547,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: command.turnId ?? null,
+           streaming: true,
++          sender: null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+@@ -573,4 +575,5 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+           turnId: command.turnId ?? null,
+           streaming: false,
++          sender: null,
+           createdAt: command.createdAt,
+           updatedAt: command.createdAt,
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts b/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
+index b761387d..e0714590 100644
+--- a/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
++++ b/apps/server/src/persistence/Layers/ProjectionThreadMessages.test.ts
+@@ -36,4 +36,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         text: "initial",
+         attachments: persistedAttachments,
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -47,4 +48,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         role: "user",
+         text: "updated",
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -81,4 +83,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+           },
+         ],
++        sender: null,
+         isStreaming: false,
+         createdAt,
+@@ -93,4 +96,5 @@ layer("ProjectionThreadMessageRepository", (it) => {
+         text: "cleared",
+         attachments: [],
++        sender: null,
+         isStreaming: false,
+         createdAt,
+diff --git a/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts b/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
+index 6f0b25dd..ca79c018 100644
+--- a/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
++++ b/apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
+@@ -17,4 +17,5 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
+     isStreaming: Schema.Number,
+     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
++    sender: Schema.NullOr(Schema.String),
+   }),
+ );
+@@ -36,4 +37,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text,
+           attachments_json,
++          sender,
+           is_streaming,
+           created_at,
+@@ -54,4 +56,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+             )
+           ),
++          ${row.sender},
+           ${row.isStreaming ? 1 : 0},
+           ${row.createdAt},
+@@ -68,4 +71,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+             projection_thread_messages.attachments_json
+           ),
++          sender = excluded.sender,
+           is_streaming = excluded.is_streaming,
+           created_at = excluded.created_at,
+@@ -87,4 +91,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text,
+           attachments_json AS "attachments",
++          sender,
+           is_streaming AS "isStreaming",
+           created_at AS "createdAt",
+@@ -123,4 +128,5 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
+           text: row.text,
+           isStreaming: row.isStreaming === 1,
++          sender: row.sender ?? null,
+           createdAt: row.createdAt,
+           updatedAt: row.updatedAt,
+diff --git a/apps/server/src/persistence/Migrations.ts b/apps/server/src/persistence/Migrations.ts
+index c759665f..e864b4c7 100644
+--- a/apps/server/src/persistence/Migrations.ts
++++ b/apps/server/src/persistence/Migrations.ts
+@@ -32,4 +32,5 @@ import Migration0016 from "./Migrations/016_CanonicalizeModelSelections.ts";
+ import Migration0017 from "./Migrations/017_ProjectionThreadsArchivedAt.ts";
+ import Migration0018 from "./Migrations/018_ProjectionThreadsArchivedAtIndex.ts";
++import Migration0019 from "./Migrations/019_ProjectionThreadMessageSender.ts";
+ 
+ /**
+@@ -62,4 +63,5 @@ export const migrationEntries = [
+   [17, "ProjectionThreadsArchivedAt", Migration0017],
+   [18, "ProjectionThreadsArchivedAtIndex", Migration0018],
++  [19, "ProjectionThreadMessageSender", Migration0019],
+ ] as const;
+ 
+diff --git a/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts b/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts
+new file mode 100644
+index 00000000..9682a2ce
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts
+@@ -0,0 +1,11 @@
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as Effect from "effect/Effect";
++
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  yield* sql`
++    ALTER TABLE projection_thread_messages
++    ADD COLUMN sender TEXT
++  `;
++});
+diff --git a/apps/server/src/persistence/Services/ProjectionThreadMessages.ts b/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
+index 00b1d399..cd5c8d11 100644
+--- a/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
++++ b/apps/server/src/persistence/Services/ProjectionThreadMessages.ts
+@@ -27,4 +27,5 @@ export const ProjectionThreadMessage = Schema.Struct({
+   text: Schema.String,
+   attachments: Schema.optional(Schema.Array(ChatAttachment)),
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   isStreaming: Schema.Boolean,
+   createdAt: IsoDateTime,
+diff --git a/apps/server/src/provider/Layers/ProviderRegistry.test.ts b/apps/server/src/provider/Layers/ProviderRegistry.test.ts
+index 116c008d..d22474c7 100644
+--- a/apps/server/src/provider/Layers/ProviderRegistry.test.ts
++++ b/apps/server/src/provider/Layers/ProviderRegistry.test.ts
+@@ -22,5 +22,5 @@ import {
+ import * as PlatformError from "effect/PlatformError";
+ import { ChildProcessSpawner } from "effect/unstable/process";
+-import { deepMerge } from "@t3tools/shared/Struct";
++import { deepMerge, type DeepPartial } from "@t3tools/shared/Struct";
+ 
+ import {
+@@ -111,5 +111,7 @@ function makeMutableServerSettingsService(
+         Effect.gen(function* () {
+           const current = yield* Ref.get(settingsRef);
+-          const next = Schema.decodeSync(ServerSettings)(deepMerge(current, patch));
++          const next = Schema.decodeSync(ServerSettings)(
++            deepMerge(current, patch as DeepPartial<ServerSettings>),
++          );
+           yield* Ref.set(settingsRef, next);
+           yield* PubSub.publish(changes, next);
+diff --git a/apps/server/src/serverSettings.ts b/apps/server/src/serverSettings.ts
+index a5b4345d..113a61ac 100644
+--- a/apps/server/src/serverSettings.ts
++++ b/apps/server/src/serverSettings.ts
+@@ -92,5 +92,7 @@ export class ServerSettingsService extends ServiceMap.Service<
+           updateSettings: (patch) =>
+             Ref.get(currentSettingsRef).pipe(
+-              Effect.map((currentSettings) => deepMerge(currentSettings, patch)),
++              Effect.map((currentSettings) =>
++                deepMerge(currentSettings, patch as DeepPartial<ServerSettings>),
++              ),
+               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+             ),
+@@ -325,5 +327,11 @@ const makeServerSettings = Effect.gen(function* () {
+         Effect.gen(function* () {
+           const current = yield* getSettingsFromCache;
+-          const next = yield* Schema.decodeEffect(ServerSettings)(deepMerge(current, patch)).pipe(
++          const merged = deepMerge(current, patch as DeepPartial<ServerSettings>);
++          // Normalize authToken: null → undefined (null is the "remove" signal in the patch)
++          const normalized = {
++            ...merged,
++            authToken: merged.authToken ?? undefined,
++          };
++          const next = yield* Schema.decodeEffect(ServerSettings)(normalized).pipe(
+             Effect.mapError(
+               (cause) =>
+diff --git a/apps/server/src/wsServer.ts b/apps/server/src/wsServer.ts
+index 25f81589..c106cdf2 100644
+--- a/apps/server/src/wsServer.ts
++++ b/apps/server/src/wsServer.ts
+@@ -914,4 +914,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
+           availableEditors,
+           settings,
++          host,
++          port,
++          authToken,
+         };
+       }
+diff --git a/apps/web/src/components/ChatView.browser.tsx b/apps/web/src/components/ChatView.browser.tsx
+index 20816d69..d90f86ae 100644
+--- a/apps/web/src/components/ChatView.browser.tsx
++++ b/apps/web/src/components/ChatView.browser.tsx
+@@ -154,4 +154,5 @@ function createUserMessage(options: {
+     ...(options.attachments ? { attachments: options.attachments } : {}),
+     turnId: null,
++    sender: null,
+     streaming: false,
+     createdAt: isoAt(options.offsetSeconds),
+@@ -166,4 +167,5 @@ function createAssistantMessage(options: { id: MessageId; text: string; offsetSe
+     text: options.text,
+     turnId: null,
++    sender: null,
+     streaming: false,
+     createdAt: isoAt(options.offsetSeconds),
+diff --git a/apps/web/src/components/KeybindingsToast.browser.tsx b/apps/web/src/components/KeybindingsToast.browser.tsx
+index 224bd2f8..d037f225 100644
+--- a/apps/web/src/components/KeybindingsToast.browser.tsx
++++ b/apps/web/src/components/KeybindingsToast.browser.tsx
+@@ -111,4 +111,5 @@ function createMinimalSnapshot(): OrchestrationReadModel {
+             text: "hello",
+             turnId: null,
++            sender: null,
+             streaming: false,
+             createdAt: NOW_ISO,
+diff --git a/apps/web/src/components/chat/MessagesTimeline.tsx b/apps/web/src/components/chat/MessagesTimeline.tsx
+index 9e0b8959..7780e275 100644
+--- a/apps/web/src/components/chat/MessagesTimeline.tsx
++++ b/apps/web/src/components/chat/MessagesTimeline.tsx
+@@ -431,4 +431,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
+                   </div>
+                   <p className="text-right text-[10px] text-muted-foreground/30">
++                    {row.message.sender && (
++                      <span className="text-primary/40">{row.message.sender} · </span>
++                    )}
+                     {formatTimestamp(row.message.createdAt, timestampFormat)}
+                   </p>
+diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
+index b7fde0c5..519252b1 100644
+--- a/apps/web/src/components/settings/SettingsPanels.tsx
++++ b/apps/web/src/components/settings/SettingsPanels.tsx
+@@ -542,4 +542,5 @@ export function GeneralSettingsPanel() {
+   >({});
+   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
++  const [isTokenRevealed, setIsTokenRevealed] = useState(false);
+   const refreshingRef = useRef(false);
+   const queryClient = useQueryClient();
+@@ -1372,4 +1373,85 @@ export function GeneralSettingsPanel() {
+       </SettingsSection>
+ 
++      <SettingsSection title="API Access">
++        <SettingsRow
++          title="Endpoint URL"
++          description="Connection details for remote agents using l6claw-cli."
++          control={
++            <div className="flex items-center gap-2">
++              <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
++                {serverConfigQuery.data
++                  ? `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`
++                  : "Loading..."}
++              </code>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => {
++                  if (!serverConfigQuery.data) return;
++                  void navigator.clipboard.writeText(
++                    `ws://${serverConfigQuery.data.host ?? "localhost"}:${serverConfigQuery.data.port ?? 3773}`,
++                  );
++                }}
++              >
++                Copy
++              </Button>
++            </div>
++          }
++        />
++
++        <SettingsRow
++          title="Auth Token"
++          description="Secret token used to authenticate remote agent connections."
++          control={
++            <div className="flex items-center gap-2">
++              <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
++                {isTokenRevealed
++                  ? (serverConfigQuery.data?.authToken ?? "—")
++                  : "••••••••••••••••••••••••••••••••"}
++              </code>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => setIsTokenRevealed((v) => !v)}
++              >
++                {isTokenRevealed ? "Hide" : "Reveal"}
++              </Button>
++              <Button
++                type="button"
++                size="xs"
++                variant="outline"
++                onClick={() => {
++                  void navigator.clipboard.writeText(serverConfigQuery.data?.authToken ?? "");
++                }}
++              >
++                Copy
++              </Button>
++            </div>
++          }
++        />
++
++        <SettingsRow
++          title="Persist across restarts"
++          description="Save the auth token to disk so it is restored when the server restarts."
++          control={
++            <Switch
++              checked={settings.authToken !== undefined}
++              onCheckedChange={(checked) => {
++                if (checked) {
++                  void updateSettings({
++                    authToken: serverConfigQuery.data?.authToken ?? undefined,
++                  });
++                } else {
++                  void ensureNativeApi().server.updateSettings({ authToken: null });
++                }
++              }}
++              aria-label="Persist auth token across restarts"
++            />
++          }
++        />
++      </SettingsSection>
++
+       <SettingsSection title="Advanced">
+         <SettingsRow
+diff --git a/apps/web/src/hooks/useSettings.ts b/apps/web/src/hooks/useSettings.ts
+index 3f804bc4..ed3182d5 100644
+--- a/apps/web/src/hooks/useSettings.ts
++++ b/apps/web/src/hooks/useSettings.ts
+@@ -36,5 +36,5 @@ import { normalizeCustomModelSlugs } from "~/modelSelection";
+ import { Predicate, Schema, Struct } from "effect";
+ import { DeepMutable } from "effect/Types";
+-import { deepMerge } from "@t3tools/shared/Struct";
++import { deepMerge, type DeepPartial } from "@t3tools/shared/Struct";
+ 
+ const CLIENT_SETTINGS_STORAGE_KEY = "t3code:client-settings:v1";
+@@ -116,5 +116,5 @@ export function useUpdateSettings() {
+           return {
+             ...old,
+-            settings: deepMerge(old.settings, serverPatch),
++            settings: deepMerge(old.settings, serverPatch as DeepPartial<ServerSettings>),
+           };
+         });
+diff --git a/apps/web/src/store.test.ts b/apps/web/src/store.test.ts
+index 6e909b38..1b46e79e 100644
+--- a/apps/web/src/store.test.ts
++++ b/apps/web/src/store.test.ts
+@@ -416,4 +416,5 @@ describe("incremental orchestration updates", () => {
+         text: " world",
+         turnId: TurnId.makeUnsafe("turn-1"),
++        sender: null,
+         streaming: true,
+         createdAt: "2026-02-27T00:00:01.000Z",
+@@ -465,4 +466,5 @@ describe("incremental orchestration updates", () => {
+           text: "done",
+           turnId: TurnId.makeUnsafe("turn-1"),
++          sender: null,
+           streaming: false,
+           createdAt: "2026-02-27T00:00:03.000Z",
+@@ -544,4 +546,5 @@ describe("incremental orchestration updates", () => {
+         text: "final answer",
+         turnId,
++        sender: null,
+         streaming: false,
+         createdAt: "2026-02-27T00:00:03.000Z",
+diff --git a/apps/web/src/store.ts b/apps/web/src/store.ts
+index eff6a6fd..1d9eb8c7 100644
+--- a/apps/web/src/store.ts
++++ b/apps/web/src/store.ts
+@@ -109,4 +109,5 @@ function mapMessage(message: OrchestrationMessage): ChatMessage {
+     text: message.text,
+     turnId: message.turnId,
++    sender: message.sender ?? null,
+     createdAt: message.createdAt,
+     streaming: message.streaming,
+@@ -600,4 +601,5 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
+             : {}),
+           turnId: event.payload.turnId,
++          sender: event.payload.sender,
+           streaming: event.payload.streaming,
+           createdAt: event.payload.createdAt,
+diff --git a/apps/web/src/types.ts b/apps/web/src/types.ts
+index 0ebf1503..74565845 100644
+--- a/apps/web/src/types.ts
++++ b/apps/web/src/types.ts
+@@ -47,4 +47,5 @@ export interface ChatMessage {
+   attachments?: ChatAttachment[];
+   turnId?: TurnId | null;
++  sender?: string | null;
+   createdAt: string;
+   completedAt?: string | undefined;
+diff --git a/bun.lock b/bun.lock
+index e13245b7..6dfae97f 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -123,4 +123,19 @@
+       },
+     },
++    "packages/cli": {
++      "name": "@t3tools/cli",
++      "version": "0.0.1",
++      "bin": {
++        "l6claw-cli": "./dist/l6claw-cli",
++      },
++      "dependencies": {
++        "@effect/platform-node": "catalog:",
++        "effect": "catalog:",
++      },
++      "devDependencies": {
++        "@types/bun": "catalog:",
++        "typescript": "catalog:",
++      },
++    },
+     "packages/contracts": {
+       "name": "@t3tools/contracts",
+@@ -171,4 +186,5 @@
+   },
+   "trustedDependencies": [
++    "electron",
+     "node-pty",
+   ],
+@@ -667,4 +683,6 @@
+     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
+ 
++    "@t3tools/cli": ["@t3tools/cli@workspace:packages/cli"],
++
+     "@t3tools/contracts": ["@t3tools/contracts@workspace:packages/contracts"],
+ 
+diff --git a/docs/superpowers/plans/2026-04-02-l6-remote-cli.md b/docs/superpowers/plans/2026-04-02-l6-remote-cli.md
+new file mode 100644
+index 00000000..77779277
+--- /dev/null
++++ b/docs/superpowers/plans/2026-04-02-l6-remote-cli.md
+@@ -0,0 +1,1805 @@
++# L6 Remote CLI Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Add a `sender` field to messages, persist auth tokens, and build a standalone CLI (`l6claw-cli`) for remote agents to list threads and send messages into T3 Code.
++
++**Architecture:** Three tracks converge: (1) sender field flows through contracts → database → server → web UI, (2) auth token auto-generation with opt-in persistence via settings, (3) a new `packages/cli` package using `effect/unstable/cli` that connects via WebSocket to send commands and listen for events. The CLI compiles to a standalone binary via `bun build --compile`.
++
++**Tech Stack:** Effect 4.0.0-beta.42, `effect/unstable/cli` (Command/Flag), Bun, SQLite, React, Vitest
++
++**Spec:** `.l6-specs/l6-remote-cli.md`
++
++---
++
++### Task 1: Add `sender` field to contracts schemas
++
++**Files:**
++- Modify: `packages/contracts/src/orchestration.ts:159-169` (OrchestrationMessage)
++- Modify: `packages/contracts/src/orchestration.ts:391-409` (ThreadTurnStartCommand)
++- Modify: `packages/contracts/src/orchestration.ts:701-711` (ThreadMessageSentPayload)
++
++- [ ] **Step 1: Add `sender` to `OrchestrationMessage`**
++
++In `packages/contracts/src/orchestration.ts`, add `sender` field to OrchestrationMessage:
++
++```typescript
++export const OrchestrationMessage = Schema.Struct({
++  id: MessageId,
++  role: OrchestrationMessageRole,
++  text: Schema.String,
++  attachments: Schema.optional(Schema.Array(ChatAttachment)),
++  turnId: Schema.NullOr(TurnId),
++  streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
++  createdAt: IsoDateTime,
++  updatedAt: IsoDateTime,
++});
++```
++
++The `withDecodingDefault(() => null)` ensures backward compatibility — existing persisted messages without a sender field decode cleanly to `null`.
++
++- [ ] **Step 2: Add `sender` to `ThreadTurnStartCommand.message`**
++
++In the same file, add optional `sender` to the message struct within `ThreadTurnStartCommand`:
++
++```typescript
++export const ThreadTurnStartCommand = Schema.Struct({
++  type: Schema.Literal("thread.turn.start"),
++  commandId: CommandId,
++  threadId: ThreadId,
++  message: Schema.Struct({
++    messageId: MessageId,
++    role: Schema.Literal("user"),
++    text: Schema.String,
++    attachments: Schema.Array(ChatAttachment),
++    sender: Schema.optional(Schema.String),
++  }),
++  modelSelection: Schema.optional(ModelSelection),
++  titleSeed: Schema.optional(TrimmedNonEmptyString),
++  runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
++  interactionMode: ProviderInteractionMode.pipe(
++    Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
++  ),
++  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
++  createdAt: IsoDateTime,
++});
++```
++
++Also check if there is a `ClientThreadTurnStartCommand` (line ~411) and add `sender` there too if it has its own message struct.
++
++- [ ] **Step 3: Add `sender` to `ThreadMessageSentPayload`**
++
++```typescript
++export const ThreadMessageSentPayload = Schema.Struct({
++  threadId: ThreadId,
++  messageId: MessageId,
++  role: OrchestrationMessageRole,
++  text: Schema.String,
++  attachments: Schema.optional(Schema.Array(ChatAttachment)),
++  turnId: Schema.NullOr(TurnId),
++  streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
++  createdAt: IsoDateTime,
++  updatedAt: IsoDateTime,
++});
++```
++
++- [ ] **Step 4: Run typecheck**
++
++Run: `bun typecheck`
++
++Expected: Contract changes propagate — expect type errors in server code (decider, projection) that reference these schemas without the new field. That's expected and will be fixed in subsequent tasks.
++
++- [ ] **Step 5: Commit**
++
++```bash
++git add packages/contracts/src/orchestration.ts
++git commit -m "feat(contracts): add sender field to message schemas"
++```
++
++---
++
++### Task 2: Database migration for `sender` column
++
++**Files:**
++- Create: `apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts`
++- Modify: `apps/server/src/persistence/Migrations.ts`
++
++- [ ] **Step 1: Create migration file**
++
++Create `apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts`:
++
++```typescript
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as Effect from "effect/Effect";
++
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  yield* sql`
++    ALTER TABLE projection_thread_messages
++    ADD COLUMN sender TEXT
++  `;
++});
++```
++
++- [ ] **Step 2: Register migration**
++
++In `apps/server/src/persistence/Migrations.ts`, add import and entry:
++
++Add import after line 33:
++```typescript
++import Migration0019 from "./Migrations/019_ProjectionThreadMessageSender.ts";
++```
++
++Add entry to `migrationEntries` array after line 63:
++```typescript
++  [19, "ProjectionThreadMessageSender", Migration0019],
++```
++
++- [ ] **Step 3: Commit**
++
++```bash
++git add apps/server/src/persistence/Migrations/019_ProjectionThreadMessageSender.ts apps/server/src/persistence/Migrations.ts
++git commit -m "feat(server): add sender column migration for thread messages"
++```
++
++---
++
++### Task 3: Add `sender` to persistence layer
++
++**Files:**
++- Modify: `apps/server/src/persistence/Services/ProjectionThreadMessages.ts:22-32`
++- Modify: `apps/server/src/persistence/Layers/ProjectionThreadMessages.ts:15-20,30-73,77-96,117-130`
++
++- [ ] **Step 1: Add `sender` to `ProjectionThreadMessage` service schema**
++
++In `apps/server/src/persistence/Services/ProjectionThreadMessages.ts`, add `sender` to the schema:
++
++```typescript
++export const ProjectionThreadMessage = Schema.Struct({
++  messageId: MessageId,
++  threadId: ThreadId,
++  turnId: Schema.NullOr(TurnId),
++  role: OrchestrationMessageRole,
++  text: Schema.String,
++  attachments: Schema.optional(Schema.Array(ChatAttachment)),
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
++  isStreaming: Schema.Boolean,
++  createdAt: IsoDateTime,
++  updatedAt: IsoDateTime,
++});
++```
++
++- [ ] **Step 2: Add `sender` to SQL INSERT/UPSERT**
++
++In `apps/server/src/persistence/Layers/ProjectionThreadMessages.ts`, update the upsert query to include `sender`:
++
++```typescript
++    execute: (row) => {
++      const nextAttachmentsJson =
++        row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
++      return sql`
++        INSERT INTO projection_thread_messages (
++          message_id,
++          thread_id,
++          turn_id,
++          role,
++          text,
++          attachments_json,
++          sender,
++          is_streaming,
++          created_at,
++          updated_at
++        )
++        VALUES (
++          ${row.messageId},
++          ${row.threadId},
++          ${row.turnId},
++          ${row.role},
++          ${row.text},
++          COALESCE(
++            ${nextAttachmentsJson},
++            (
++              SELECT attachments_json
++              FROM projection_thread_messages
++              WHERE message_id = ${row.messageId}
++            )
++          ),
++          ${row.sender},
++          ${row.isStreaming ? 1 : 0},
++          ${row.createdAt},
++          ${row.updatedAt}
++        )
++        ON CONFLICT (message_id)
++        DO UPDATE SET
++          thread_id = excluded.thread_id,
++          turn_id = excluded.turn_id,
++          role = excluded.role,
++          text = excluded.text,
++          attachments_json = COALESCE(
++            excluded.attachments_json,
++            projection_thread_messages.attachments_json
++          ),
++          sender = excluded.sender,
++          is_streaming = excluded.is_streaming,
++          created_at = excluded.created_at,
++          updated_at = excluded.updated_at
++      `;
++    },
++```
++
++- [ ] **Step 3: Add `sender` to SELECT query**
++
++Update the list query to include `sender`:
++
++```typescript
++    execute: ({ threadId }) =>
++      sql`
++        SELECT
++          message_id AS "messageId",
++          thread_id AS "threadId",
++          turn_id AS "turnId",
++          role,
++          text,
++          attachments_json AS "attachments",
++          sender,
++          is_streaming AS "isStreaming",
++          created_at AS "createdAt",
++          updated_at AS "updatedAt"
++        FROM projection_thread_messages
++        WHERE thread_id = ${threadId}
++        ORDER BY created_at ASC, message_id ASC
++      `,
++```
++
++- [ ] **Step 4: Add `sender` to row mapping**
++
++In the `listByThreadId` method's row mapper (around line 118), add `sender`:
++
++```typescript
++      Effect.map((rows) =>
++        rows.map((row) => ({
++          messageId: row.messageId,
++          threadId: row.threadId,
++          turnId: row.turnId,
++          role: row.role,
++          text: row.text,
++          isStreaming: row.isStreaming === 1,
++          sender: row.sender ?? null,
++          createdAt: row.createdAt,
++          updatedAt: row.updatedAt,
++          ...(row.attachments !== null ? { attachments: row.attachments } : {}),
++        })),
++      ),
++```
++
++Also update the `ProjectionThreadMessageDbRowSchema` mapping at the top of the file (around line 15) to include `sender`:
++
++```typescript
++const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
++  Struct.assign({
++    isStreaming: Schema.Number,
++    attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
++    sender: Schema.NullOr(Schema.String),
++  }),
++);
++```
++
++- [ ] **Step 5: Run typecheck**
++
++Run: `bun typecheck`
++
++Expected: Persistence layer should compile. Server-side orchestration code may still have type errors (decider, projection pipeline) — addressed in next task.
++
++- [ ] **Step 6: Commit**
++
++```bash
++git add apps/server/src/persistence/Services/ProjectionThreadMessages.ts apps/server/src/persistence/Layers/ProjectionThreadMessages.ts
++git commit -m "feat(server): add sender to message persistence layer"
++```
++
++---
++
++### Task 4: Pass `sender` through orchestration decider and projection
++
++**Files:**
++- Modify: `apps/server/src/orchestration/decider.ts:343-361`
++- Modify: `apps/server/src/orchestration/Layers/ProjectionPipeline.ts:626-657`
++
++- [ ] **Step 1: Pass `sender` from command to event in decider**
++
++In `apps/server/src/orchestration/decider.ts`, in the `thread.turn.start` case (around line 343), update the `userMessageEvent` payload to include `sender`. The sender is truncated to 32 characters:
++
++```typescript
++      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
++        ...withEventBase({
++          aggregateKind: "thread",
++          aggregateId: command.threadId,
++          occurredAt: command.createdAt,
++          commandId: command.commandId,
++        }),
++        type: "thread.message-sent",
++        payload: {
++          threadId: command.threadId,
++          messageId: command.message.messageId,
++          role: "user",
++          text: command.message.text,
++          attachments: command.message.attachments,
++          turnId: null,
++          streaming: false,
++          sender: command.message.sender
++            ? command.message.sender.slice(0, 32)
++            : null,
++          createdAt: command.createdAt,
++          updatedAt: command.createdAt,
++        },
++      };
++```
++
++- [ ] **Step 2: Pass `sender` through projection pipeline**
++
++In `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`, in the `thread.message-sent` handler of `applyThreadMessagesProjection` (around line 626-657), pass `sender` to the upsert call:
++
++Find the `yield* projectionThreadMessageRepository.upsert({...})` call and add `sender`:
++
++```typescript
++  yield* projectionThreadMessageRepository.upsert({
++    messageId: event.payload.messageId,
++    threadId: event.payload.threadId,
++    turnId: event.payload.turnId,
++    role: event.payload.role,
++    text: nextText,
++    ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
++    sender: event.payload.sender ?? null,
++    isStreaming: event.payload.streaming,
++    createdAt: existingMessage?.createdAt ?? event.payload.createdAt,
++    updatedAt: event.payload.updatedAt,
++  });
++```
++
++- [ ] **Step 3: Run typecheck**
++
++Run: `bun typecheck`
++
++Expected: Server should now compile cleanly (or have only web-side errors remaining).
++
++- [ ] **Step 4: Run tests**
++
++Run: `bun run test`
++
++Expected: All existing tests should pass. The sender field defaults to null so existing test data is backward-compatible.
++
++- [ ] **Step 5: Commit**
++
++```bash
++git add apps/server/src/orchestration/decider.ts apps/server/src/orchestration/Layers/ProjectionPipeline.ts
++git commit -m "feat(server): propagate sender through orchestration decider and projection"
++```
++
++---
++
++### Task 5: Add `sender` to web app types and store
++
++**Files:**
++- Modify: `apps/web/src/types.ts:43-52`
++- Modify: `apps/web/src/store.ts:96-116`
++
++- [ ] **Step 1: Add `sender` to `ChatMessage` interface**
++
++In `apps/web/src/types.ts`:
++
++```typescript
++export interface ChatMessage {
++  id: MessageId;
++  role: "user" | "assistant" | "system";
++  text: string;
++  attachments?: ChatAttachment[];
++  turnId?: TurnId | null;
++  sender?: string | null;
++  createdAt: string;
++  completedAt?: string | undefined;
++  streaming: boolean;
++}
++```
++
++- [ ] **Step 2: Map `sender` in store's `mapMessage`**
++
++In `apps/web/src/store.ts`, update the `mapMessage` function (around line 96-116) to include `sender`:
++
++```typescript
++function mapMessage(message: OrchestrationMessage): ChatMessage {
++  const attachments = message.attachments?.map((attachment) => ({
++    type: "image" as const,
++    id: attachment.id,
++    name: attachment.name,
++    mimeType: attachment.mimeType,
++    sizeBytes: attachment.sizeBytes,
++    previewUrl: toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachment.id)),
++  }));
++
++  return {
++    id: message.id,
++    role: message.role,
++    text: message.text,
++    turnId: message.turnId,
++    sender: message.sender ?? null,
++    createdAt: message.createdAt,
++    streaming: message.streaming,
++    ...(message.streaming ? {} : { completedAt: message.updatedAt }),
++    ...(attachments && attachments.length > 0 ? { attachments } : {}),
++  };
++}
++```
++
++- [ ] **Step 3: Run typecheck**
++
++Run: `bun typecheck`
++
++Expected: Web app should compile cleanly. The `sender` field is optional on `ChatMessage` so existing rendering code is unaffected.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add apps/web/src/types.ts apps/web/src/store.ts
++git commit -m "feat(web): add sender field to ChatMessage type and store mapping"
++```
++
++---
++
++### Task 6: Render sender indicator in messages timeline
++
++**Files:**
++- Modify: `apps/web/src/components/chat/MessagesTimeline.tsx:432-434`
++
++- [ ] **Step 1: Add sender display next to timestamp**
++
++In `apps/web/src/components/chat/MessagesTimeline.tsx`, find the user message timestamp rendering (around line 432-434):
++
++Replace:
++```tsx
++                  <p className="text-right text-[10px] text-muted-foreground/30">
++                    {formatTimestamp(row.message.createdAt, timestampFormat)}
++                  </p>
++```
++
++With:
++```tsx
++                  <p className="text-right text-[10px] text-muted-foreground/30">
++                    {row.message.sender && (
++                      <span className="text-primary/40">{row.message.sender} · </span>
++                    )}
++                    {formatTimestamp(row.message.createdAt, timestampFormat)}
++                  </p>
++```
++
++The `text-primary/40` class gives a muted accent colour that's distinct from the timestamp's `text-muted-foreground/30` but similarly understated. The `·` separator visually links sender and timestamp. If no sender (null/undefined), nothing extra renders.
++
++- [ ] **Step 2: Verify render**
++
++Run: `bun dev` (in apps/web) and send a message from the UI. Confirm:
++- Normal UI messages render exactly as before (no sender badge)
++- No visual regressions
++
++- [ ] **Step 3: Commit**
++
++```bash
++git add apps/web/src/components/chat/MessagesTimeline.tsx
++git commit -m "feat(web): render sender indicator on user messages"
++```
++
++---
++
++### Task 7: Add `authToken` to ServerSettings and ServerConfig schemas
++
++**Files:**
++- Modify: `packages/contracts/src/settings.ts:74-92,144-155`
++- Modify: `packages/contracts/src/server.ts:68-77`
++
++- [ ] **Step 1: Add `authToken` to `ServerSettings`**
++
++In `packages/contracts/src/settings.ts`, add `authToken` to the ServerSettings schema:
++
++```typescript
++export const ServerSettings = Schema.Struct({
++  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
++  defaultThreadEnvMode: ThreadEnvMode.pipe(
++    Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvMode),
++  ),
++  textGenerationModelSelection: ModelSelection.pipe(
++    Schema.withDecodingDefault(() => ({
++      provider: "codex" as const,
++      model: DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex,
++    })),
++  ),
++
++  // Auth
++  authToken: Schema.optional(Schema.String),
++
++  // Provider specific settings
++  providers: Schema.Struct({
++    codex: CodexSettings.pipe(Schema.withDecodingDefault(() => ({}))),
++    claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
++  }).pipe(Schema.withDecodingDefault(() => ({}))),
++});
++```
++
++- [ ] **Step 2: Add `authToken` to `ServerSettingsPatch`**
++
++```typescript
++export const ServerSettingsPatch = Schema.Struct({
++  enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
++  defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
++  textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
++  authToken: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  providers: Schema.optionalKey(
++    Schema.Struct({
++      codex: Schema.optionalKey(CodexSettingsPatch),
++      claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
++    }),
++  ),
++});
++```
++
++Note: `Schema.NullOr(Schema.String)` allows the patch to set `authToken: null` to explicitly remove it (unpersist), while omitting the key entirely means "don't change."
++
++- [ ] **Step 3: Add endpoint info to `ServerConfig`**
++
++In `packages/contracts/src/server.ts`, add `host`, `port`, and `authToken` to the `ServerConfig` schema so the web app can display connection info:
++
++```typescript
++export const ServerConfig = Schema.Struct({
++  cwd: TrimmedNonEmptyString,
++  keybindingsConfigPath: TrimmedNonEmptyString,
++  keybindings: ResolvedKeybindingsConfig,
++  issues: ServerConfigIssues,
++  providers: ServerProviders,
++  availableEditors: Schema.Array(EditorId),
++  settings: ServerSettings,
++  host: Schema.optional(Schema.String),
++  port: Schema.optional(Schema.Number),
++  authToken: Schema.optional(Schema.String),
++});
++```
++
++- [ ] **Step 4: Run typecheck**
++
++Run: `bun typecheck`
++
++Expected: Contract changes propagate. May see errors in server's `serverGetConfig` handler since it now needs to include host/port/authToken — that's expected, fixed in next task.
++
++- [ ] **Step 5: Commit**
++
++```bash
++git add packages/contracts/src/settings.ts packages/contracts/src/server.ts
++git commit -m "feat(contracts): add authToken to settings and endpoint info to server config"
++```
++
++---
++
++### Task 8: Implement auth token auto-generation and persistence on server
++
++**Files:**
++- Modify: `apps/server/src/main.ts:220-240,280-290`
++- Modify: `apps/server/src/wsServer.ts:904-917`
++
++- [ ] **Step 1: Resolve authToken from settings on startup**
++
++In `apps/server/src/main.ts`, after the existing `authToken` resolution (around line 233-239), add a fallback that reads from persisted settings and auto-generates if needed.
++
++Find the section where `authToken` is resolved:
++```typescript
++const authToken = resolveOptionPrecedence(
++  input.authToken,
++  Option.fromUndefinedOr(env.authToken),
++  Option.flatMap(bootstrapEnvelope, (bootstrap) =>
++    Option.fromUndefinedOr(bootstrap.authToken),
++  ),
++);
++```
++
++Below this, add settings fallback and auto-generation. The persisted settings file is loaded at this point via the existing settings infrastructure. Since settings loading is async (Effect), we need to load the settings authToken before building the final config. Find where settings are loaded early (or add a synchronous file read for just the authToken), or restructure to:
++
++```typescript
++// After existing resolution
++const authTokenFromFlags = resolveOptionPrecedence(
++  input.authToken,
++  Option.fromUndefinedOr(env.authToken),
++  Option.flatMap(bootstrapEnvelope, (bootstrap) =>
++    Option.fromUndefinedOr(bootstrap.authToken),
++  ),
++);
++
++// Read persisted authToken from settings.json if flags/env didn't provide one.
++// Use NodeFileSystem (already available in the server's Effect context) to read
++// the settings file before the full settings service starts up.
++const settingsAuthToken = Option.isNone(authTokenFromFlags)
++  ? yield* fileSystem.readFileString(pathService.resolve(stateDir, "settings.json")).pipe(
++      Effect.map((raw) => {
++        const parsed = JSON.parse(raw) as Record<string, unknown>;
++        return Option.fromUndefinedOr(parsed.authToken as string | undefined);
++      }),
++      Effect.orElseSucceed(() => Option.none<string>()),
++    )
++  : Effect.succeed(Option.none<string>());
++
++const resolvedSettingsToken = yield* settingsAuthToken;
++
++// Auto-generate if nothing provided
++const authToken = Option.isSome(authTokenFromFlags)
++  ? authTokenFromFlags
++  : Option.isSome(resolvedSettingsToken)
++    ? resolvedSettingsToken
++    : Option.some(
++        Array.from(crypto.getRandomValues(new Uint8Array(32)))
++          .map((b) => b.toString(16).padStart(2, "0"))
++          .join(""),
++      );
++```
++
++Note: The exact implementation may need adjustment based on whether the startup flow is already in an Effect.gen context. Check `makeServerProgram` or `ServerConfigLive` for the right place. The key outcome: `authToken` is always `Option.some(string)` — never `Option.none`.
++
++- [ ] **Step 2: Include host/port/authToken in `serverGetConfig` response**
++
++In `apps/server/src/wsServer.ts`, update the `serverGetConfig` handler (around line 904-917) to include endpoint info:
++
++```typescript
++      case WS_METHODS.serverGetConfig: {
++        const keybindingsConfig = yield* keybindingsManager.loadConfigState;
++        const settings = yield* serverSettingsManager.getSettings;
++        const providers = yield* Ref.get(providersRef);
++        return {
++          cwd,
++          keybindingsConfigPath,
++          keybindings: keybindingsConfig.keybindings,
++          issues: keybindingsConfig.issues,
++          providers,
++          availableEditors,
++          settings,
++          host,
++          port,
++          authToken,
++        };
++      }
++```
++
++`host`, `port`, and `authToken` are already in scope as destructured from `serverConfig` at the top of the `createServer` function.
++
++- [ ] **Step 3: Run typecheck and tests**
++
++Run: `bun typecheck && bun run test`
++
++Expected: All passing.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add apps/server/src/main.ts apps/server/src/wsServer.ts
++git commit -m "feat(server): auto-generate auth token and expose endpoint info in config"
++```
++
++---
++
++### Task 9: Add API Access section to settings UI
++
++**Files:**
++- Modify: `apps/web/src/components/settings/SettingsPanels.tsx`
++
++- [ ] **Step 1: Add API Access section to GeneralSettingsPanel**
++
++In `apps/web/src/components/settings/SettingsPanels.tsx`, inside the `GeneralSettingsPanel` function (starts at line 515), add state for token visibility and the API Access section. Add this after existing state declarations (around line 545):
++
++```tsx
++const [isTokenRevealed, setIsTokenRevealed] = useState(false);
++```
++
++Then add the API Access section JSX inside the panel's return statement. Find a suitable location in the rendered output (e.g., after the provider settings section, before the "Restore defaults" section). Add:
++
++```tsx
++{/* API Access */}
++<div className="space-y-4">
++  <h3 className="text-sm font-medium">API Access</h3>
++  <p className="text-xs text-muted-foreground">
++    Connection details for remote agents using l6claw-cli.
++  </p>
++
++  <div className="space-y-3">
++    <div className="space-y-1">
++      <label className="text-xs text-muted-foreground">Endpoint URL</label>
++      <div className="flex items-center gap-2">
++        <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs">
++          {serverConfigQuery.data
++            ? `ws://${serverConfigQuery.data.host || "localhost"}:${serverConfigQuery.data.port ?? 3773}`
++            : "Loading..."}
++        </code>
++        <Button
++          type="button"
++          size="xs"
++          variant="outline"
++          onClick={() => {
++            const url = serverConfigQuery.data
++              ? `ws://${serverConfigQuery.data.host || "localhost"}:${serverConfigQuery.data.port ?? 3773}`
++              : "";
++            void navigator.clipboard.writeText(url);
++          }}
++        >
++          Copy
++        </Button>
++      </div>
++    </div>
++
++    <div className="space-y-1">
++      <label className="text-xs text-muted-foreground">Auth Token</label>
++      <div className="flex items-center gap-2">
++        <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono">
++          {isTokenRevealed
++            ? (serverConfigQuery.data?.authToken ?? "—")
++            : "••••••••••••••••••••••••••••••••"}
++        </code>
++        <Button
++          type="button"
++          size="xs"
++          variant="outline"
++          onClick={() => setIsTokenRevealed((v) => !v)}
++        >
++          {isTokenRevealed ? "Hide" : "Reveal"}
++        </Button>
++        <Button
++          type="button"
++          size="xs"
++          variant="outline"
++          onClick={() => {
++            void navigator.clipboard.writeText(
++              serverConfigQuery.data?.authToken ?? "",
++            );
++          }}
++        >
++          Copy
++        </Button>
++      </div>
++    </div>
++
++    <div className="flex items-center gap-2">
++      <input
++        type="checkbox"
++        id="persist-token"
++        checked={settings.authToken !== undefined}
++        onChange={(e) => {
++          if (e.target.checked) {
++            updateSettings({
++              authToken: serverConfigQuery.data?.authToken ?? undefined,
++            });
++          } else {
++            updateSettings({ authToken: null as unknown as undefined });
++          }
++        }}
++        className="size-3.5 rounded border-border"
++      />
++      <label htmlFor="persist-token" className="text-xs text-muted-foreground">
++        Persist across restarts
++      </label>
++    </div>
++  </div>
++</div>
++```
++
++Note: The exact persist/unpersist semantics depend on how the settings patch handles `null` vs `undefined`. The `ServerSettingsPatch` has `authToken: Schema.optionalKey(Schema.NullOr(Schema.String))` — sending `null` should remove the key from the persisted settings (via `stripDefaultServerSettings`), while sending the token string persists it. Verify this behavior during implementation and adjust the onChange handler accordingly. The `useUpdateSettings` hook may need its `splitPatch` function updated to route `authToken` to server settings.
++
++- [ ] **Step 2: Ensure `authToken` is routed as a server setting**
++
++In `apps/web/src/hooks/useSettings.ts`, the `splitPatch` function determines which settings keys go to the server vs client localStorage. Since `authToken` is in `ServerSettings`, it should be automatically detected by the `SERVER_SETTINGS_KEYS` set. Verify this — if keys are hardcoded rather than derived from the schema, add `"authToken"` to the server keys set.
++
++- [ ] **Step 3: Run typecheck and verify in browser**
++
++Run: `bun typecheck`
++
++Then `bun dev` and open the settings page. Verify:
++- Endpoint URL shows the correct ws:// address
++- Auth token is masked, revealable, copyable
++- Persist checkbox works
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/hooks/useSettings.ts
++git commit -m "feat(web): add API Access section to settings panel"
++```
++
++---
++
++### Task 10: Scaffold `packages/cli` package
++
++**Files:**
++- Create: `packages/cli/package.json`
++- Create: `packages/cli/tsconfig.json`
++- Create: `packages/cli/src/main.ts` (minimal placeholder)
++
++- [ ] **Step 1: Create package.json**
++
++Create `packages/cli/package.json`:
++
++```json
++{
++  "name": "@t3tools/cli",
++  "version": "0.0.1",
++  "type": "module",
++  "bin": {
++    "l6claw-cli": "./dist/l6claw-cli"
++  },
++  "scripts": {
++    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
++    "dev": "bun run src/main.ts",
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@t3tools/contracts": "workspace:*",
++    "effect": "catalog:"
++  },
++  "devDependencies": {
++    "@types/bun": "catalog:",
++    "typescript": "catalog:"
++  }
++}
++```
++
++- [ ] **Step 2: Create tsconfig.json**
++
++Create `packages/cli/tsconfig.json`:
++
++```json
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "outDir": "dist",
++    "rootDir": "src"
++  },
++  "include": ["src"]
++}
++```
++
++- [ ] **Step 3: Create minimal main.ts**
++
++Create `packages/cli/src/main.ts`:
++
++```typescript
++import { Effect } from "effect";
++import { Command } from "effect/unstable/cli";
++
++const cli = Command.make("l6claw-cli", {}).pipe(
++  Command.withDescription("Remote CLI for T3 Code"),
++  Command.withHandler(() => Effect.log("l6claw-cli: no command specified. Use --help.")),
++);
++
++Command.run(cli, { name: "l6claw-cli", version: "0.0.1" });
++```
++
++- [ ] **Step 4: Install dependencies and verify**
++
++Run: `bun install`
++
++Then: `bun run packages/cli/src/main.ts --help`
++
++Expected: CLI help output showing "l6claw-cli" with description.
++
++- [ ] **Step 5: Commit**
++
++```bash
++git add packages/cli/
++git commit -m "feat(cli): scaffold l6claw-cli package"
++```
++
++---
++
++### Task 11: Implement WebSocket client module
++
++**Files:**
++- Create: `packages/cli/src/ws/protocol.ts`
++- Create: `packages/cli/src/ws/client.ts`
++
++- [ ] **Step 1: Create protocol types**
++
++Create `packages/cli/src/ws/protocol.ts`:
++
++```typescript
++/**
++ * Wire protocol types matching T3 Code WebSocket format.
++ * Kept minimal — only what the CLI needs.
++ */
++
++/** Client → Server request envelope */
++export interface WsRequest {
++  readonly id: string;
++  readonly body: Record<string, unknown> & { readonly _tag: string };
++}
++
++/** Server → Client response envelope */
++export interface WsResponse {
++  readonly id: string;
++  readonly result?: unknown;
++  readonly error?: { readonly message: string };
++}
++
++/** Server → Client push envelope */
++export interface WsPush {
++  readonly type: "push";
++  readonly sequence: number;
++  readonly channel: string;
++  readonly data: unknown;
++}
++
++export type WsMessage = WsResponse | WsPush;
++
++export function isPush(msg: WsMessage): msg is WsPush {
++  return "type" in msg && msg.type === "push";
++}
++
++export function isResponse(msg: WsMessage): msg is WsResponse {
++  return "id" in msg && !("type" in msg);
++}
++```
++
++- [ ] **Step 2: Create WebSocket client**
++
++Create `packages/cli/src/ws/client.ts`:
++
++```typescript
++/**
++ * Thin WebSocket client for T3 Code.
++ * Handles connection, auth, request/response, and push event listening.
++ */
++import { Effect, Queue, Deferred, Duration, Scope, Ref } from "effect";
++import type { WsRequest, WsResponse, WsPush, WsMessage } from "./protocol.ts";
++import { isPush, isResponse } from "./protocol.ts";
++
++export class WsConnectionError {
++  readonly _tag = "WsConnectionError";
++  constructor(readonly message: string) {}
++}
++
++export class WsRequestError {
++  readonly _tag = "WsRequestError";
++  constructor(readonly message: string) {}
++}
++
++export interface T3WsClient {
++  /** Send an RPC request and await the response */
++  readonly request: (
++    tag: string,
++    params?: Record<string, unknown>,
++  ) => Effect.Effect<unknown, WsRequestError>;
++  /** Subscribe to push events. Returns a queue that receives all pushes. */
++  readonly pushEvents: Queue.Dequeue<WsPush>;
++  /** Close the connection */
++  readonly close: Effect.Effect<void>;
++}
++
++/**
++ * Connect to T3 Code WebSocket and return a client.
++ * Must be used within an Effect.scoped context — connection closes on scope finalization.
++ */
++export const connect = (
++  url: string,
++  token: string,
++): Effect.Effect<T3WsClient, WsConnectionError, Scope.Scope> =>
++  Effect.gen(function* () {
++    const wsUrl = `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
++
++    // Pending request map: id → Deferred<WsResponse>
++    const pending = yield* Ref.make(new Map<string, Deferred.Deferred<WsResponse, WsRequestError>>());
++    const pushQueue = yield* Queue.unbounded<WsPush>();
++
++    // Connect
++    const ws = yield* Effect.async<WebSocket, WsConnectionError>((resume) => {
++      const socket = new WebSocket(wsUrl);
++      socket.onopen = () => resume(Effect.succeed(socket));
++      socket.onerror = (event) => {
++        const msg = "message" in event ? String((event as ErrorEvent).message) : "WebSocket connection failed";
++        resume(Effect.fail(new WsConnectionError(msg)));
++      };
++      // Handle rejection (401, 400) — onclose fires without onopen
++      socket.onclose = (event) => {
++        if (event.code === 1006) {
++          resume(Effect.fail(new WsConnectionError(
++            event.reason || "Connection rejected (check token and URL)"
++          )));
++        }
++      };
++    });
++
++    // Message dispatcher
++    ws.onmessage = (event) => {
++      try {
++        const msg = JSON.parse(String(event.data)) as WsMessage;
++        if (isPush(msg)) {
++          Effect.runSync(Queue.offer(pushQueue, msg));
++        } else if (isResponse(msg)) {
++          Effect.runSync(
++            Ref.get(pending).pipe(
++              Effect.flatMap((map) => {
++                const deferred = map.get(msg.id);
++                if (deferred) {
++                  map.delete(msg.id);
++                  return Deferred.succeed(deferred, msg);
++                }
++                return Effect.void;
++              }),
++            ),
++          );
++        }
++      } catch {
++        // Ignore unparseable messages
++      }
++    };
++
++    ws.onclose = () => {
++      // Reject all pending requests
++      Effect.runSync(
++        Ref.get(pending).pipe(
++          Effect.flatMap((map) => {
++            const effects = [...map.values()].map((d) =>
++              Deferred.fail(d, new WsRequestError("Connection closed")),
++            );
++            map.clear();
++            return Effect.all(effects, { discard: true });
++          }),
++        ),
++      );
++    };
++
++    // Finalize on scope close
++    yield* Effect.addFinalizer(() =>
++      Effect.sync(() => {
++        ws.close();
++      }),
++    );
++
++    let requestCounter = 0;
++
++    const request = (
++      tag: string,
++      params?: Record<string, unknown>,
++    ): Effect.Effect<unknown, WsRequestError> =>
++      Effect.gen(function* () {
++        const id = `cli-${++requestCounter}`;
++        const deferred = yield* Deferred.make<WsResponse, WsRequestError>();
++        yield* Ref.update(pending, (map) => new Map(map).set(id, deferred));
++
++        const envelope: WsRequest = {
++          id,
++          body: { _tag: tag, ...params },
++        };
++        ws.send(JSON.stringify(envelope));
++
++        const response = yield* Deferred.await(deferred).pipe(
++          Effect.timeoutFail({
++            duration: Duration.seconds(30),
++            onTimeout: () => new WsRequestError("Request timed out"),
++          }),
++        );
++
++        if (response.error) {
++          return yield* Effect.fail(new WsRequestError(response.error.message));
++        }
++        return response.result;
++      });
++
++    return {
++      request,
++      pushEvents: pushQueue,
++      close: Effect.sync(() => ws.close()),
++    } satisfies T3WsClient;
++  });
++```
++
++- [ ] **Step 3: Run typecheck**
++
++Run: `cd packages/cli && bun run typecheck`
++
++Expected: Compiles cleanly.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add packages/cli/src/ws/
++git commit -m "feat(cli): implement WebSocket client module"
++```
++
++---
++
++### Task 12: Implement `threads` command
++
++**Files:**
++- Create: `packages/cli/src/commands/threads.ts`
++- Modify: `packages/cli/src/main.ts`
++
++- [ ] **Step 1: Create threads command**
++
++Create `packages/cli/src/commands/threads.ts`:
++
++```typescript
++import { Effect, Scope } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError } from "../ws/client.ts";
++
++interface ThreadRow {
++  projectName: string;
++  threadTitle: string;
++  threadId: string;
++  sessionStatus: string;
++}
++
++function resolveThreads(snapshot: {
++  projects: Array<{ id: string; title: string; deletedAt?: string | null }>;
++  threads: Array<{
++    id: string;
++    projectId: string;
++    title: string;
++    archivedAt?: string | null;
++    deletedAt?: string | null;
++    session?: { status: string } | null;
++  }>;
++}): ThreadRow[] {
++  const projectMap = new Map(
++    snapshot.projects
++      .filter((p) => !p.deletedAt)
++      .map((p) => [p.id, p.title]),
++  );
++
++  return snapshot.threads
++    .filter((t) => !t.archivedAt && !t.deletedAt && projectMap.has(t.projectId))
++    .map((t) => ({
++      projectName: projectMap.get(t.projectId)!,
++      threadTitle: t.title,
++      threadId: t.id,
++      sessionStatus: t.session?.status ?? "idle",
++    }))
++    .sort((a, b) =>
++      a.projectName.localeCompare(b.projectName) ||
++      a.threadTitle.localeCompare(b.threadTitle),
++    );
++}
++
++function truncate(str: string, maxLen: number): string {
++  return str.length > maxLen ? `${str.slice(0, maxLen - 3)}...` : str;
++}
++
++function formatTable(rows: ThreadRow[]): string {
++  if (rows.length === 0) return "No threads found.";
++
++  const headers = { project: "PROJECT", thread: "THREAD", id: "ID", status: "STATUS" };
++  const projW = Math.max(headers.project.length, ...rows.map((r) => r.projectName.length));
++  const threadW = Math.max(headers.thread.length, ...rows.map((r) => truncate(r.threadTitle, 60).length));
++  const idW = Math.max(headers.id.length, ...rows.map((r) => r.threadId.length));
++
++  const pad = (s: string, w: number) => s.padEnd(w);
++  const header = `${pad(headers.project, projW)}  ${pad(headers.thread, threadW)}  ${pad(headers.id, idW)}  ${headers.status}`;
++  const lines = rows.map(
++    (r) =>
++      `${pad(r.projectName, projW)}  ${pad(truncate(r.threadTitle, 60), threadW)}  ${pad(r.threadId, idW)}  ${r.sessionStatus}`,
++  );
++  return [header, ...lines].join("\n");
++}
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL of the T3 Code server (e.g. ws://100.64.1.2:3773). Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token for the WebSocket connection. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const jsonFlag = Flag.boolean("json").pipe(
++  Flag.withDescription("Output as JSON array instead of table."),
++  Flag.optional,
++);
++
++export const threadsCommand = Command.make("threads", { url: urlFlag, token: tokenFlag, json: jsonFlag }).pipe(
++  Command.withDescription("List all threads across all projects."),
++  Command.withHandler(({ url: urlFlag, token: tokenFlag, json }) =>
++    Effect.gen(function* () {
++      const url = urlFlag ?? process.env.T3CODE_URL;
++      const token = tokenFlag ?? process.env.T3CODE_TOKEN;
++      if (!url || !token) {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      }
++      const scope = yield* Scope.make();
++      const client = yield* connect(url, token).pipe(Effect.provideService(Scope.Scope, scope));
++
++      try {
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: Array<{ id: string; title: string; deletedAt?: string | null }>;
++          threads: Array<{
++            id: string;
++            projectId: string;
++            title: string;
++            archivedAt?: string | null;
++            deletedAt?: string | null;
++            session?: { status: string } | null;
++          }>;
++        };
++
++        const rows = resolveThreads(snapshot);
++
++        if (json === true) {
++          console.log(JSON.stringify(rows, null, 2));
++        } else {
++          console.log(formatTable(rows));
++        }
++      } finally {
++        yield* Scope.close(scope, Effect.void);
++      }
++    }).pipe(
++      Effect.catchAll((err) => {
++        const msg = err instanceof WsConnectionError ? err.message :
++                    "message" in err ? (err as { message: string }).message :
++                    "Unknown error";
++        return Effect.sync(() => {
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        });
++      }),
++    ),
++  ),
++);
++
++```
++
++- [ ] **Step 2: Wire threads command into main.ts**
++
++Replace `packages/cli/src/main.ts`:
++
++```typescript
++import { Effect } from "effect";
++import { Command } from "effect/unstable/cli";
++import { threadsCommand } from "./commands/threads.ts";
++
++const cli = Command.make("l6claw-cli", {}).pipe(
++  Command.withDescription("Remote CLI for T3 Code"),
++  Command.withSubcommands([threadsCommand]),
++  Command.withHandler(() =>
++    Effect.sync(() => {
++      console.error("No command specified. Use --help.");
++      process.exit(1);
++    }),
++  ),
++);
++
++Command.run(cli, { name: "l6claw-cli", version: "0.0.1" });
++```
++
++- [ ] **Step 3: Test manually**
++
++Run: `T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> bun run packages/cli/src/main.ts threads`
++
++Expected: Table listing of threads from a running T3 Code server.
++
++Run: `T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> bun run packages/cli/src/main.ts threads --json`
++
++Expected: JSON array output.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add packages/cli/src/
++git commit -m "feat(cli): implement threads command"
++```
++
++---
++
++### Task 13: Implement `send` command (fire-and-forget)
++
++**Files:**
++- Create: `packages/cli/src/commands/send.ts`
++- Modify: `packages/cli/src/main.ts`
++
++- [ ] **Step 1: Create send command**
++
++Create `packages/cli/src/commands/send.ts`:
++
++```typescript
++import { Effect, Scope, Queue } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError, type WsRequestError } from "../ws/client.ts";
++import type { WsPush } from "../ws/protocol.ts";
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL of the T3 Code server. Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token for the WebSocket connection. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const threadIdFlag = Flag.string("thread-id").pipe(
++  Flag.withDescription("Target thread by ID."),
++  Flag.optional,
++);
++const projectFlag = Flag.string("project").pipe(
++  Flag.withDescription("Target project by name (case-insensitive)."),
++  Flag.optional,
++);
++const threadFlag = Flag.string("thread").pipe(
++  Flag.withDescription("Target thread by title (case-insensitive, must pair with --project)."),
++  Flag.optional,
++);
++const textFlag = Flag.string("text").pipe(
++  Flag.withDescription("Message text to send."),
++);
++const senderFlag = Flag.string("sender").pipe(
++  Flag.withDescription("Sender identity displayed in the UI (max 32 characters)."),
++);
++const waitFlag = Flag.boolean("wait").pipe(
++  Flag.withDescription("Block until the agent finishes responding."),
++  Flag.optional,
++);
++const timeoutFlag = Flag.integer("timeout").pipe(
++  Flag.withDescription("Maximum wait time in seconds (default: 86400, only with --wait)."),
++  Flag.optional,
++);
++
++interface ResolvedThread {
++  threadId: string;
++  runtimeMode: string;
++}
++
++function resolveThread(
++  snapshot: {
++    projects: Array<{ id: string; title: string }>;
++    threads: Array<{
++      id: string;
++      projectId: string;
++      title: string;
++      runtimeMode: string;
++      archivedAt?: string | null;
++      deletedAt?: string | null;
++      session?: { activeTurnId?: string | null; status?: string } | null;
++    }>;
++  },
++  opts: {
++    threadId?: string;
++    project?: string;
++    thread?: string;
++  },
++): ResolvedThread {
++  if (opts.threadId) {
++    const found = snapshot.threads.find((t) => t.id === opts.threadId);
++    if (!found) {
++      console.error(`Thread not found: ${opts.threadId}`);
++      process.exit(1);
++    }
++    if (found.session?.activeTurnId) {
++      console.error("Thread has an active turn in progress");
++      process.exit(1);
++    }
++    return { threadId: found.id, runtimeMode: found.runtimeMode };
++  }
++
++  if (!opts.project || !opts.thread) {
++    console.error("Either --thread-id or both --project and --thread are required.");
++    process.exit(1);
++  }
++
++  const matchedProject = snapshot.projects.filter(
++    (p) => p.title.toLowerCase() === opts.project!.toLowerCase(),
++  );
++  if (matchedProject.length === 0) {
++    console.error(`Project not found: ${opts.project}`);
++    process.exit(1);
++  }
++  const projectIds = new Set(matchedProject.map((p) => p.id));
++
++  const matchedThreads = snapshot.threads.filter(
++    (t) =>
++      projectIds.has(t.projectId) &&
++      t.title.toLowerCase() === opts.thread!.toLowerCase() &&
++      !t.archivedAt &&
++      !t.deletedAt,
++  );
++
++  if (matchedThreads.length === 0) {
++    console.error(`Thread not found: "${opts.thread}" in project "${opts.project}"`);
++    process.exit(1);
++  }
++  if (matchedThreads.length > 1) {
++    console.error(
++      `Multiple threads match: ${matchedThreads.map((t) => `"${t.title}" (${t.id})`).join(", ")}`,
++    );
++    process.exit(1);
++  }
++
++  const found = matchedThreads[0]!;
++  if (found.session?.activeTurnId) {
++    console.error("Thread has an active turn in progress");
++    process.exit(1);
++  }
++  return { threadId: found.id, runtimeMode: found.runtimeMode };
++}
++
++export const sendCommand = Command.make("send", {
++  url: urlFlag,
++  token: tokenFlag,
++  threadId: threadIdFlag,
++  project: projectFlag,
++  thread: threadFlag,
++  text: textFlag,
++  sender: senderFlag,
++  wait: waitFlag,
++  timeout: timeoutFlag,
++}).pipe(
++  Command.withDescription("Send a message to a thread, triggering the agent to act."),
++  Command.withHandler((opts) =>
++    Effect.gen(function* () {
++      const url = opts.url ?? process.env.T3CODE_URL;
++      const token = opts.token ?? process.env.T3CODE_TOKEN;
++      if (!url || !token) {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      }
++
++      const scope = yield* Scope.make();
++      const client = yield* connect(url, token).pipe(Effect.provideService(Scope.Scope, scope));
++
++      try {
++        // Fetch snapshot for thread resolution
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: Array<{ id: string; title: string }>;
++          threads: Array<{
++            id: string;
++            projectId: string;
++            title: string;
++            runtimeMode: string;
++            archivedAt?: string | null;
++            deletedAt?: string | null;
++            session?: { activeTurnId?: string | null; status?: string } | null;
++          }>;
++        };
++
++        const resolved = resolveThread(snapshot, {
++          threadId: opts.threadId ?? undefined,
++          project: opts.project ?? undefined,
++          thread: opts.thread ?? undefined,
++        });
++
++        const commandId = crypto.randomUUID();
++        const messageId = crypto.randomUUID();
++
++        const command = {
++          type: "thread.turn.start",
++          commandId,
++          threadId: resolved.threadId,
++          message: {
++            messageId,
++            role: "user",
++            text: opts.text,
++            sender: opts.sender.slice(0, 32),
++            attachments: [],
++          },
++          runtimeMode: resolved.runtimeMode,
++          interactionMode: "default",
++          createdAt: new Date().toISOString(),
++        };
++
++        if (opts.wait === true) {
++          // Wait mode — handled in Task 14
++          yield* sendAndWait(client, command, resolved.threadId, opts.timeout ?? 86400);
++        } else {
++          // Fire and forget
++          yield* client.request("orchestration.dispatchCommand", { command });
++          console.log(JSON.stringify({ status: "accepted", turnId: null }));
++        }
++      } finally {
++        yield* Scope.close(scope, Effect.void);
++      }
++    }).pipe(
++      Effect.catchAll((err) => {
++        const msg = err instanceof WsConnectionError ? err.message :
++                    "message" in err ? (err as { message: string }).message :
++                    "Unknown error";
++        return Effect.sync(() => {
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        });
++      }),
++    ),
++  ),
++);
++
++/**
++ * Placeholder — implemented in Task 14.
++ * Sends the command and waits for turn completion by listening to push events.
++ */
++function sendAndWait(
++  _client: { request: (tag: string, params?: Record<string, unknown>) => Effect.Effect<unknown, any>; pushEvents: Queue.Dequeue<WsPush> },
++  _command: Record<string, unknown>,
++  _threadId: string,
++  _timeoutSec: number,
++): Effect.Effect<void, any> {
++  return Effect.sync(() => {
++    console.error("--wait mode: not yet implemented");
++    process.exit(1);
++  });
++}
++```
++
++- [ ] **Step 2: Register send command in main.ts**
++
++Update `packages/cli/src/main.ts` to include the send command:
++
++```typescript
++import { Effect } from "effect";
++import { Command } from "effect/unstable/cli";
++import { threadsCommand } from "./commands/threads.ts";
++import { sendCommand } from "./commands/send.ts";
++
++const cli = Command.make("l6claw-cli", {}).pipe(
++  Command.withDescription("Remote CLI for T3 Code"),
++  Command.withSubcommands([threadsCommand, sendCommand]),
++  Command.withHandler(() =>
++    Effect.sync(() => {
++      console.error("No command specified. Use --help.");
++      process.exit(1);
++    }),
++  ),
++);
++
++Command.run(cli, { name: "l6claw-cli", version: "0.0.1" });
++```
++
++- [ ] **Step 3: Test fire-and-forget manually**
++
++Run against a running T3 Code server with an existing thread:
++
++```bash
++T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> \
++  bun run packages/cli/src/main.ts send \
++  --thread-id <id> --text "Hello from CLI" --sender "Test CLI"
++```
++
++Expected: `{"status":"accepted","turnId":null}` printed to stdout. In the T3 Code UI, the message should appear in the thread with "Test CLI" shown next to the timestamp.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add packages/cli/src/
++git commit -m "feat(cli): implement send command (fire-and-forget mode)"
++```
++
++---
++
++### Task 14: Implement `send --wait` mode
++
++**Files:**
++- Modify: `packages/cli/src/commands/send.ts`
++
++- [ ] **Step 1: Replace `sendAndWait` placeholder with real implementation**
++
++In `packages/cli/src/commands/send.ts`, replace the `sendAndWait` placeholder function:
++
++```typescript
++/**
++ * Send a message and wait for the turn to complete.
++ * Subscribes to push events BEFORE dispatching the command to prevent race conditions.
++ * Collects assistant messages and prints them on completion.
++ */
++function sendAndWait(
++  client: {
++    request: (tag: string, params?: Record<string, unknown>) => Effect.Effect<unknown, any>;
++    pushEvents: Queue.Dequeue<WsPush>;
++  },
++  command: Record<string, unknown>,
++  threadId: string,
++  timeoutSec: number,
++): Effect.Effect<void, any> {
++  return Effect.gen(function* () {
++    // State tracking
++    let discoveredTurnId: string | null = null;
++    let sessionWasRunning = false;
++    const assistantMessages: string[] = [];
++    let turnStatus: "running" | "completed" | "error" | "interrupted" = "running";
++
++    // Start listening for push events BEFORE dispatching
++    const eventFiber = yield* Effect.fork(
++      Effect.gen(function* () {
++        while (turnStatus === "running") {
++          const push = yield* Queue.take(client.pushEvents);
++
++          if (push.channel !== "orchestration.domainEvent") continue;
++          const event = push.data as {
++            type: string;
++            aggregateId: string;
++            payload: Record<string, unknown>;
++          };
++          if (event.aggregateId !== threadId) continue;
++
++          switch (event.type) {
++            case "thread.session-set": {
++              const session = event.payload.session as {
++                activeTurnId: string | null;
++                status: string;
++              } | null;
++              if (session?.activeTurnId && !discoveredTurnId) {
++                discoveredTurnId = session.activeTurnId;
++                sessionWasRunning = true;
++              }
++              if (
++                sessionWasRunning &&
++                (!session?.activeTurnId ||
++                  session.status === "ready" ||
++                  session.status === "idle" ||
++                  session.status === "stopped" ||
++                  session.status === "error")
++              ) {
++                if (session?.status === "error") {
++                  turnStatus = "error";
++                } else if (session?.status === "stopped") {
++                  turnStatus = "interrupted";
++                }
++                // Don't set completed here — wait for turn-diff-completed for clean exit
++                // But if session goes idle/ready, that's also a completion signal
++                if (session?.status === "ready" || session?.status === "idle") {
++                  turnStatus = "completed";
++                }
++              }
++              break;
++            }
++
++            case "thread.message-sent": {
++              const payload = event.payload as {
++                role: string;
++                text: string;
++                streaming: boolean;
++                messageId: string;
++              };
++              if (payload.role === "assistant" && !payload.streaming) {
++                assistantMessages.push(payload.text);
++              }
++              break;
++            }
++
++            case "thread.turn-diff-completed": {
++              const payload = event.payload as { status: string };
++              if (payload.status === "ready") {
++                turnStatus = "completed";
++              } else if (payload.status === "error") {
++                turnStatus = "error";
++              } else if (payload.status === "missing") {
++                turnStatus = "interrupted";
++              }
++              break;
++            }
++          }
++        }
++      }),
++    );
++
++    // Now dispatch the command
++    yield* client.request("orchestration.dispatchCommand", { command });
++
++    // Wait for completion or timeout
++    const result = yield* Fiber.join(eventFiber).pipe(
++      Effect.timeoutTo({
++        duration: Duration.seconds(timeoutSec),
++        onSuccess: () => turnStatus,
++        onTimeout: () => "timeout" as const,
++      }),
++    );
++
++    const finalStatus = result === "timeout" ? "timeout" : turnStatus;
++
++    // Output
++    for (const msg of assistantMessages) {
++      console.log(msg);
++    }
++
++    if (finalStatus !== "completed") {
++      const statusJson = JSON.stringify({
++        status: finalStatus,
++        turnId: discoveredTurnId,
++      });
++      console.error(statusJson);
++      process.exit(1);
++    }
++  });
++}
++```
++
++Also add the missing `Duration` import at the top of the file:
++
++```typescript
++import { Effect, Scope, Queue, Fiber, Duration } from "effect";
++```
++
++- [ ] **Step 2: Test wait mode manually**
++
++Start a T3 Code server with a thread that has an active Codex/Claude session in `full-access` mode, then:
++
++```bash
++T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> \
++  bun run packages/cli/src/main.ts send \
++  --thread-id <id> --text "What is 2+2?" --sender "Test CLI" --wait --timeout 120
++```
++
++Expected: CLI blocks until the agent responds, then prints the assistant's response text to stdout and exits with code 0.
++
++Test timeout:
++```bash
++T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> \
++  bun run packages/cli/src/main.ts send \
++  --thread-id <id> --text "Write a very long program" --sender "Test CLI" --wait --timeout 5
++```
++
++Expected: After 5 seconds, CLI prints any partial assistant text to stdout, prints `{"status":"timeout","turnId":"..."}` to stderr, exits with code 1.
++
++- [ ] **Step 3: Commit**
++
++```bash
++git add packages/cli/src/commands/send.ts
++git commit -m "feat(cli): implement send --wait mode with push event correlation"
++```
++
++---
++
++### Task 15: Build binary and final verification
++
++**Files:**
++- Modify: `packages/cli/package.json` (verify build script)
++
++- [ ] **Step 1: Build the binary**
++
++Run: `cd packages/cli && bun run build`
++
++Expected: `packages/cli/dist/l6claw-cli` binary is produced.
++
++- [ ] **Step 2: Test the compiled binary**
++
++```bash
++T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> \
++  ./packages/cli/dist/l6claw-cli threads
++```
++
++Expected: Same output as `bun run src/main.ts threads`.
++
++```bash
++T3CODE_URL=ws://localhost:3773 T3CODE_TOKEN=<token> \
++  ./packages/cli/dist/l6claw-cli send \
++  --thread-id <id> --text "Binary test" --sender "Compiled CLI"
++```
++
++Expected: `{"status":"accepted","turnId":null}` and message visible in UI with "Compiled CLI" sender indicator.
++
++- [ ] **Step 3: Run full project checks**
++
++Run: `bun fmt && bun lint && bun typecheck && bun run test`
++
++Expected: All passing.
++
++- [ ] **Step 4: Commit**
++
++```bash
++git add packages/cli/
++git commit -m "feat(cli): verify l6claw-cli build and add dist to package"
++```
++
++---
++
++### Task 16: Add `.gitignore` for CLI dist
++
++**Files:**
++- Create or modify: `packages/cli/.gitignore`
++
++- [ ] **Step 1: Create .gitignore**
++
++Create `packages/cli/.gitignore`:
++
++```
++dist/
++```
++
++- [ ] **Step 2: Commit**
++
++```bash
++git add packages/cli/.gitignore
++git commit -m "chore(cli): add .gitignore for compiled binary"
++```
+diff --git a/package.json b/package.json
+index 6f14f7b7..9505fe18 100644
+--- a/package.json
++++ b/package.json
+@@ -73,5 +73,6 @@
+   },
+   "trustedDependencies": [
+-    "node-pty"
++    "node-pty",
++    "electron"
+   ]
+ }
+diff --git a/packages/cli/.gitignore b/packages/cli/.gitignore
+new file mode 100644
+index 00000000..849ddff3
+--- /dev/null
++++ b/packages/cli/.gitignore
+@@ -0,0 +1 @@
++dist/
+diff --git a/packages/cli/package.json b/packages/cli/package.json
+new file mode 100644
+index 00000000..56e61aa9
+--- /dev/null
++++ b/packages/cli/package.json
+@@ -0,0 +1,21 @@
++{
++  "name": "@t3tools/cli",
++  "version": "0.0.1",
++  "bin": {
++    "l6claw-cli": "./dist/l6claw-cli"
++  },
++  "type": "module",
++  "scripts": {
++    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
++    "dev": "bun run src/main.ts",
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "@effect/platform-node": "catalog:",
++    "effect": "catalog:"
++  },
++  "devDependencies": {
++    "@types/bun": "catalog:",
++    "typescript": "catalog:"
++  }
++}
+diff --git a/packages/cli/src/commands/send.ts b/packages/cli/src/commands/send.ts
+new file mode 100644
+index 00000000..c59e93a0
+--- /dev/null
++++ b/packages/cli/src/commands/send.ts
+@@ -0,0 +1,298 @@
++import { Cause, Duration, Effect, Fiber, Option, Queue } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError } from "../ws/client";
++import type { WsPush } from "../ws/protocol";
++
++// ── Flags ────────────────────────────────────────────────────────────────
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL. Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const threadIdFlag = Flag.string("thread-id").pipe(
++  Flag.withDescription("Target thread by ID."),
++  Flag.optional,
++);
++const projectFlag = Flag.string("project").pipe(
++  Flag.withDescription("Target project by name (case-insensitive)."),
++  Flag.optional,
++);
++const threadFlag = Flag.string("thread").pipe(
++  Flag.withDescription("Target thread title (case-insensitive, requires --project)."),
++  Flag.optional,
++);
++const textFlag = Flag.string("text").pipe(Flag.withDescription("Message text to send."));
++const senderFlag = Flag.string("sender").pipe(
++  Flag.withDescription("Sender identity shown in the UI (max 32 chars)."),
++);
++const waitFlag = Flag.boolean("wait").pipe(
++  Flag.withDescription("Block until agent finishes responding."),
++  Flag.optional,
++);
++const timeoutFlag = Flag.integer("timeout").pipe(
++  Flag.withDescription("Max wait time in seconds (default: 86400, --wait only)."),
++  Flag.optional,
++);
++
++// ── Thread resolution types ──────────────────────────────────────────────
++
++interface SnapshotProject {
++  id: string;
++  title: string;
++}
++interface SnapshotThread {
++  id: string;
++  projectId: string;
++  title: string;
++  runtimeMode: string;
++  archivedAt?: string | null;
++  deletedAt?: string | null;
++  session?: { activeTurnId?: string | null; status?: string } | null;
++}
++interface ResolvedThread {
++  threadId: string;
++  runtimeMode: string;
++}
++
++function resolveThread(
++  snapshot: { projects: SnapshotProject[]; threads: SnapshotThread[] },
++  opts: {
++    threadId?: string | null;
++    project?: string | null;
++    thread?: string | null;
++  },
++): ResolvedThread {
++  if (opts.threadId) {
++    const found = snapshot.threads.find((t) => t.id === opts.threadId);
++    if (!found) {
++      console.error(`Thread not found: ${opts.threadId}`);
++      process.exit(1);
++    }
++    if (found.deletedAt || found.archivedAt) {
++      console.error(`Thread is archived or deleted: ${opts.threadId}`);
++      process.exit(1);
++    }
++    if (found.session?.activeTurnId) {
++      console.error("Thread has an active turn in progress");
++      process.exit(1);
++    }
++    return { threadId: found.id, runtimeMode: found.runtimeMode };
++  }
++  if (!opts.project || !opts.thread) {
++    console.error("Either --thread-id or both --project and --thread are required.");
++    process.exit(1);
++  }
++  const matchedProjects = snapshot.projects.filter(
++    (p) => p.title.toLowerCase() === opts.project!.toLowerCase(),
++  );
++  if (matchedProjects.length === 0) {
++    console.error(`Project not found: ${opts.project}`);
++    process.exit(1);
++  }
++  const projectIds = new Set(matchedProjects.map((p) => p.id));
++  const matchedThreads = snapshot.threads.filter(
++    (t) =>
++      projectIds.has(t.projectId) &&
++      t.title.toLowerCase() === opts.thread!.toLowerCase() &&
++      !t.archivedAt &&
++      !t.deletedAt,
++  );
++  if (matchedThreads.length === 0) {
++    console.error(`Thread not found: "${opts.thread}" in project "${opts.project}"`);
++    process.exit(1);
++  }
++  if (matchedThreads.length > 1) {
++    console.error(
++      `Multiple threads match: ${matchedThreads.map((t) => `"${t.title}" (${t.id})`).join(", ")}`,
++    );
++    process.exit(1);
++  }
++  const found = matchedThreads[0]!;
++  if (found.session?.activeTurnId) {
++    console.error("Thread has an active turn in progress");
++    process.exit(1);
++  }
++  return { threadId: found.id, runtimeMode: found.runtimeMode };
++}
++
++// ── Wait mode ────────────────────────────────────────────────────────────
++
++type TurnStatus = "running" | "completed" | "error" | "interrupted" | "timeout";
++
++function waitForTurn(
++  pushEvents: Queue.Dequeue<WsPush>,
++  threadId: string,
++  timeoutSec: number,
++): Effect.Effect<{ status: TurnStatus; turnId: string | null; messages: string[] }> {
++  return Effect.gen(function* () {
++    let turnId: string | null = null;
++    let sessionWasRunning = false;
++    const messages: string[] = [];
++    let status: TurnStatus = "running";
++
++    const drain = Effect.gen(function* () {
++      while (status === "running") {
++        const push = yield* Queue.take(pushEvents);
++        if (push.channel !== "orchestration.domainEvent") continue;
++        const event = push.data as {
++          type: string;
++          aggregateId: string;
++          payload: Record<string, unknown>;
++        };
++        if (event.aggregateId !== threadId) continue;
++
++        if (event.type === "thread.session-set") {
++          const session = event.payload["session"] as {
++            activeTurnId: string | null;
++            status: string;
++          } | null;
++          if (session?.activeTurnId && !turnId) {
++            turnId = session.activeTurnId;
++            sessionWasRunning = true;
++          }
++          if (sessionWasRunning && session) {
++            if (!session.activeTurnId) {
++              if (session.status === "error") status = "error";
++              else if (session.status === "stopped" || session.status === "interrupted")
++                status = "interrupted";
++              else if (session.status === "ready" || session.status === "idle")
++                status = "completed";
++            }
++          }
++        } else if (event.type === "thread.message-sent") {
++          const p = event.payload as {
++            role: string;
++            text: string;
++            streaming: boolean;
++          };
++          if (p.role === "assistant" && !p.streaming) {
++            messages.push(p.text);
++          }
++        } else if (event.type === "thread.turn-diff-completed") {
++          const p = event.payload as { status: string };
++          if (p.status === "ready") status = "completed";
++          else if (p.status === "error") status = "error";
++          else status = "interrupted";
++        }
++      }
++    });
++
++    const fiber = yield* Effect.forkChild(drain);
++
++    const timedOut = yield* Fiber.join(fiber).pipe(
++      Effect.timeoutOrElse({
++        duration: Duration.seconds(timeoutSec),
++        orElse: () => Effect.succeed("__timeout__" as const),
++      }),
++    );
++
++    return {
++      status: timedOut === "__timeout__" ? "timeout" : status,
++      turnId,
++      messages,
++    };
++  });
++}
++
++// ── Command ───────────────────────────────────────────────────────────────
++
++export const sendCommand = Command.make("send", {
++  url: urlFlag,
++  token: tokenFlag,
++  threadId: threadIdFlag,
++  project: projectFlag,
++  thread: threadFlag,
++  text: textFlag,
++  sender: senderFlag,
++  wait: waitFlag,
++  timeout: timeoutFlag,
++}).pipe(
++  Command.withDescription("Send a message to a thread, triggering the agent to act."),
++  Command.withHandler((opts) => {
++    const url = Option.getOrUndefined(opts.url) ?? process.env["T3CODE_URL"];
++    const token = Option.getOrUndefined(opts.token) ?? process.env["T3CODE_TOKEN"];
++    if (!url || !token) {
++      return Effect.sync(() => {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      });
++    }
++    return Effect.scoped(
++      Effect.gen(function* () {
++        const client = yield* connect(url, token);
++
++        // Always fetch snapshot first (for thread resolution + runtimeMode)
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: SnapshotProject[];
++          threads: SnapshotThread[];
++        };
++        const resolved = resolveThread(snapshot, {
++          threadId: Option.getOrNull(opts.threadId),
++          project: Option.getOrNull(opts.project),
++          thread: Option.getOrNull(opts.thread),
++        });
++
++        const commandId = crypto.randomUUID();
++        const messageId = crypto.randomUUID();
++        const command = {
++          type: "thread.turn.start",
++          commandId,
++          threadId: resolved.threadId,
++          message: {
++            messageId,
++            role: "user",
++            text: opts.text,
++            sender: opts.sender.slice(0, 32),
++            attachments: [],
++          },
++          runtimeMode: resolved.runtimeMode,
++          interactionMode: "default",
++          createdAt: new Date().toISOString(),
++        };
++
++        const isWait = Option.getOrElse(opts.wait, () => false) === true;
++        const timeoutSec = Option.getOrElse(opts.timeout, () => 86400);
++
++        if (isWait) {
++          // CRITICAL: subscribe to push events BEFORE dispatching to avoid race condition
++          const waitEffect = waitForTurn(client.pushEvents, resolved.threadId, timeoutSec);
++          const fiber = yield* Effect.forkChild(waitEffect);
++          yield* client.request("orchestration.dispatchCommand", { command });
++          const waitResult = yield* Fiber.join(fiber);
++
++          // Print collected assistant messages to stdout
++          for (const msg of waitResult.messages) {
++            console.log(msg);
++          }
++
++          const finalStatus = waitResult.status;
++          if (finalStatus !== "completed") {
++            console.error(JSON.stringify({ status: finalStatus, turnId: waitResult.turnId }));
++            process.exit(1);
++          }
++        } else {
++          yield* client.request("orchestration.dispatchCommand", { command });
++          console.log(JSON.stringify({ status: "accepted", turnId: null }));
++        }
++      }),
++    ).pipe(
++      Effect.catchCause((cause) =>
++        Effect.sync(() => {
++          const err = Cause.squash(cause);
++          const msg =
++            err instanceof WsConnectionError
++              ? err.message
++              : err instanceof Error
++                ? err.message
++                : String(err);
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        }),
++      ),
++    );
++  }),
++);
+diff --git a/packages/cli/src/commands/threads.ts b/packages/cli/src/commands/threads.ts
+new file mode 100644
+index 00000000..eb88fa0d
+--- /dev/null
++++ b/packages/cli/src/commands/threads.ts
+@@ -0,0 +1,134 @@
++import { Cause, Effect, Option } from "effect";
++import { Command, Flag } from "effect/unstable/cli";
++import { connect, WsConnectionError } from "../ws/client";
++
++interface ThreadRow {
++  projectName: string;
++  threadTitle: string;
++  threadId: string;
++  sessionStatus: string;
++}
++
++interface SnapshotProject {
++  id: string;
++  title: string;
++  deletedAt?: string | null;
++}
++
++interface SnapshotThread {
++  id: string;
++  projectId: string;
++  title: string;
++  archivedAt?: string | null;
++  deletedAt?: string | null;
++  session?: { status: string } | null;
++}
++
++function resolveThreadRows(snapshot: {
++  projects: SnapshotProject[];
++  threads: SnapshotThread[];
++}): ThreadRow[] {
++  const projectMap = new Map(
++    snapshot.projects.filter((p) => !p.deletedAt).map((p) => [p.id, p.title]),
++  );
++
++  return snapshot.threads
++    .filter((t) => !t.archivedAt && !t.deletedAt && projectMap.has(t.projectId))
++    .map((t) => ({
++      projectName: projectMap.get(t.projectId)!,
++      threadTitle: t.title,
++      threadId: t.id,
++      sessionStatus: t.session?.status ?? "idle",
++    }))
++    .toSorted(
++      (a, b) =>
++        a.projectName.localeCompare(b.projectName) || a.threadTitle.localeCompare(b.threadTitle),
++    );
++}
++
++function truncate(s: string, max: number): string {
++  return s.length > max ? `${s.slice(0, max - 3)}...` : s;
++}
++
++function pad(s: string, w: number): string {
++  return s.padEnd(w);
++}
++
++function formatTable(rows: ThreadRow[]): string {
++  if (rows.length === 0) return "No threads found.";
++  const H = {
++    project: "PROJECT",
++    thread: "THREAD",
++    id: "ID",
++    status: "STATUS",
++  };
++  const pw = Math.max(H.project.length, ...rows.map((r) => r.projectName.length));
++  const tw = Math.max(H.thread.length, ...rows.map((r) => truncate(r.threadTitle, 60).length));
++  const iw = Math.max(H.id.length, ...rows.map((r) => r.threadId.length));
++  const header = `${pad(H.project, pw)}  ${pad(H.thread, tw)}  ${pad(H.id, iw)}  ${H.status}`;
++  const lines = rows.map(
++    (r) =>
++      `${pad(r.projectName, pw)}  ${pad(truncate(r.threadTitle, 60), tw)}  ${pad(r.threadId, iw)}  ${r.sessionStatus}`,
++  );
++  return [header, ...lines].join("\n");
++}
++
++const urlFlag = Flag.string("url").pipe(
++  Flag.withDescription("WebSocket URL of the T3 Code server. Overrides T3CODE_URL."),
++  Flag.optional,
++);
++const tokenFlag = Flag.string("token").pipe(
++  Flag.withDescription("Auth token. Overrides T3CODE_TOKEN."),
++  Flag.optional,
++);
++const jsonFlag = Flag.boolean("json").pipe(
++  Flag.withDescription("Output as JSON array."),
++  Flag.optional,
++);
++
++export const threadsCommand = Command.make("threads", {
++  url: urlFlag,
++  token: tokenFlag,
++  json: jsonFlag,
++}).pipe(
++  Command.withDescription("List all threads across all projects."),
++  Command.withHandler((opts) => {
++    const url = Option.getOrUndefined(opts.url) ?? process.env["T3CODE_URL"];
++    const token = Option.getOrUndefined(opts.token) ?? process.env["T3CODE_TOKEN"];
++    if (!url || !token) {
++      return Effect.sync(() => {
++        console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
++        process.exit(1);
++      });
++    }
++    return Effect.scoped(
++      Effect.gen(function* () {
++        const client = yield* connect(url, token);
++        const snapshot = (yield* client.request("orchestration.getSnapshot")) as {
++          projects: SnapshotProject[];
++          threads: SnapshotThread[];
++        };
++        const rows = resolveThreadRows(snapshot);
++        if (Option.getOrElse(opts.json, () => false) === true) {
++          console.log(JSON.stringify(rows, null, 2));
++        } else {
++          console.log(formatTable(rows));
++        }
++      }),
++    ).pipe(
++      Effect.catchCause((cause) =>
++        Effect.sync(() => {
++          const err = Cause.squash(cause);
++          const msg =
++            err instanceof WsConnectionError
++              ? err.message
++              : err instanceof Error
++                ? err.message
++                : String(err);
++          console.error(`Error: ${msg}`);
++          process.exit(1);
++        }),
++      ),
++    );
++  }),
++);
+diff --git a/packages/cli/src/main.ts b/packages/cli/src/main.ts
+new file mode 100644
+index 00000000..4d4f44ea
+--- /dev/null
++++ b/packages/cli/src/main.ts
+@@ -0,0 +1,23 @@
++import { Effect } from "effect";
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Command } from "effect/unstable/cli";
++import { threadsCommand } from "./commands/threads";
++import { sendCommand } from "./commands/send";
++
++const cli = Command.make("l6claw-cli", {}).pipe(
++  Command.withDescription("Remote CLI for T3 Code"),
++  Command.withSubcommands([threadsCommand, sendCommand]),
++  Command.withHandler(() =>
++    Effect.sync(() => {
++      console.error("No command specified. Use --help.");
++      process.exit(1);
++    }),
++  ),
++);
++
++Command.run(cli, { version: "0.0.1" }).pipe(
++  Effect.scoped,
++  Effect.provide(NodeServices.layer),
++  NodeRuntime.runMain,
++);
+diff --git a/packages/cli/src/ws/client.ts b/packages/cli/src/ws/client.ts
+new file mode 100644
+index 00000000..470ad619
+--- /dev/null
++++ b/packages/cli/src/ws/client.ts
+@@ -0,0 +1,149 @@
++/**
++ * Thin WebSocket client for T3 Code.
++ * Handles connection, auth, request/response correlation, and push event queue.
++ */
++import { Effect, Queue, Deferred, Duration, Scope, Ref } from "effect";
++import type { WsRequest, WsResponse, WsPush, WsMessage } from "./protocol";
++import { isPush, isResponse } from "./protocol";
++
++export class WsConnectionError {
++  readonly _tag = "WsConnectionError";
++  constructor(readonly message: string) {}
++}
++
++export class WsRequestError {
++  readonly _tag = "WsRequestError";
++  constructor(readonly message: string) {}
++}
++
++export interface T3WsClient {
++  /** Send an RPC request and await the response (30s timeout) */
++  readonly request: (
++    tag: string,
++    params?: Record<string, unknown>,
++  ) => Effect.Effect<unknown, WsRequestError>;
++  /** Unbounded queue of all push events received from the server */
++  readonly pushEvents: Queue.Dequeue<WsPush>;
++  /** Close the WebSocket connection */
++  readonly close: Effect.Effect<void>;
++}
++
++/**
++ * Open a WebSocket connection to T3 Code and return a client.
++ * The connection is closed when the provided Scope finalizes.
++ */
++export const connect = (
++  url: string,
++  token: string,
++): Effect.Effect<T3WsClient, WsConnectionError, Scope.Scope> =>
++  Effect.gen(function* () {
++    const wsUrl = `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
++
++    const pending = yield* Ref.make(
++      new Map<string, Deferred.Deferred<WsResponse, WsRequestError>>(),
++    );
++    const pushQueue = yield* Queue.unbounded<WsPush>();
++
++    // Connect — resolve on open, reject on error or 401/400 close before open
++    const ws = yield* Effect.callback<WebSocket, WsConnectionError>((resume) => {
++      const socket = new WebSocket(wsUrl);
++      let opened = false;
++
++      socket.addEventListener("open", () => {
++        opened = true;
++        resume(Effect.succeed(socket));
++      });
++
++      socket.addEventListener("error", () => {
++        if (!opened) {
++          resume(Effect.fail(new WsConnectionError("WebSocket connection failed")));
++        }
++      });
++
++      socket.addEventListener("close", (event: CloseEvent) => {
++        if (!opened) {
++          const reason = event.reason || `Connection rejected (code ${event.code})`;
++          resume(Effect.fail(new WsConnectionError(reason)));
++        }
++      });
++    });
++
++    // Dispatch incoming messages to pending requests or push queue
++    ws.addEventListener("message", (event: MessageEvent) => {
++      let msg: WsMessage;
++      try {
++        msg = JSON.parse(String(event.data)) as WsMessage;
++      } catch {
++        return;
++      }
++
++      if (isPush(msg)) {
++        // Fire-and-forget offer; unbounded queue never blocks
++        Effect.runSync(Queue.offer(pushQueue, msg));
++      } else if (isResponse(msg)) {
++        Effect.runSync(
++          Ref.get(pending).pipe(
++            Effect.flatMap((map) => {
++              const deferred = map.get(msg.id);
++              if (!deferred) return Effect.void;
++              // Mutate: remove before resolving to avoid double-resolution
++              const next = new Map(map);
++              next.delete(msg.id);
++              return Ref.set(pending, next).pipe(
++                Effect.flatMap(() => Deferred.succeed(deferred, msg as WsResponse)),
++              );
++            }),
++          ),
++        );
++      }
++    });
++
++    // Reject all pending requests when connection closes
++    ws.addEventListener("close", () => {
++      Effect.runSync(
++        Ref.get(pending).pipe(
++          Effect.flatMap((map) => {
++            const effects = Array.from(map.values()).map((d) =>
++              Deferred.fail(d, new WsRequestError("Connection closed")),
++            );
++            return Ref.set(pending, new Map()).pipe(
++              Effect.flatMap(() => Effect.all(effects, { discard: true })),
++            );
++          }),
++        ),
++      );
++    });
++
++    yield* Effect.addFinalizer(() => Effect.sync(() => ws.close()));
++
++    let seq = 0;
++
++    const request = (
++      tag: string,
++      params?: Record<string, unknown>,
++    ): Effect.Effect<unknown, WsRequestError> =>
++      Effect.gen(function* () {
++        const id = `cli-${++seq}`;
++        const deferred = yield* Deferred.make<WsResponse, WsRequestError>();
++        yield* Ref.update(pending, (map) => new Map(map).set(id, deferred));
++
++        const envelope: WsRequest = { id, body: { _tag: tag, ...params } };
++        ws.send(JSON.stringify(envelope));
++
++        const response = yield* Effect.timeoutOrElse(Deferred.await(deferred), {
++          duration: Duration.seconds(30),
++          orElse: () => Effect.fail(new WsRequestError(`Request timed out: ${tag}`)),
++        });
++
++        if (response.error) {
++          return yield* Effect.fail(new WsRequestError(response.error.message));
++        }
++        return response.result;
++      });
++
++    return {
++      request,
++      pushEvents: pushQueue,
++      close: Effect.sync(() => ws.close()),
++    } satisfies T3WsClient;
++  });
+diff --git a/packages/cli/src/ws/protocol.ts b/packages/cli/src/ws/protocol.ts
+new file mode 100644
+index 00000000..13e1f427
+--- /dev/null
++++ b/packages/cli/src/ws/protocol.ts
+@@ -0,0 +1,35 @@
++/**
++ * Wire protocol types matching T3 Code WebSocket format.
++ * Kept minimal — only what the CLI needs.
++ */
++
++/** Client → Server request envelope */
++export interface WsRequest {
++  readonly id: string;
++  readonly body: Record<string, unknown> & { readonly _tag: string };
++}
++
++/** Server → Client response envelope */
++export interface WsResponse {
++  readonly id: string;
++  readonly result?: unknown;
++  readonly error?: { readonly message: string };
++}
++
++/** Server → Client push envelope */
++export interface WsPush {
++  readonly type: "push";
++  readonly sequence: number;
++  readonly channel: string;
++  readonly data: unknown;
++}
++
++export type WsMessage = WsResponse | WsPush;
++
++export function isPush(msg: WsMessage): msg is WsPush {
++  return "type" in msg && (msg as WsPush).type === "push";
++}
++
++export function isResponse(msg: WsMessage): msg is WsResponse {
++  return "id" in msg && !("type" in msg && (msg as { type?: unknown }).type === "push");
++}
+diff --git a/packages/cli/tsconfig.json b/packages/cli/tsconfig.json
+new file mode 100644
+index 00000000..5a24989c
+--- /dev/null
++++ b/packages/cli/tsconfig.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "outDir": "dist",
++    "rootDir": "src"
++  },
++  "include": ["src"]
++}
+diff --git a/packages/contracts/src/orchestration.ts b/packages/contracts/src/orchestration.ts
+index a780a55c..0f3ac3af 100644
+--- a/packages/contracts/src/orchestration.ts
++++ b/packages/contracts/src/orchestration.ts
+@@ -164,4 +164,5 @@ export const OrchestrationMessage = Schema.Struct({
+   turnId: Schema.NullOr(TurnId),
+   streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   createdAt: IsoDateTime,
+   updatedAt: IsoDateTime,
+@@ -398,4 +399,5 @@ export const ThreadTurnStartCommand = Schema.Struct({
+     text: Schema.String,
+     attachments: Schema.Array(ChatAttachment),
++    sender: Schema.optional(Schema.String),
+   }),
+   modelSelection: Schema.optional(ModelSelection),
+@@ -418,4 +420,5 @@ const ClientThreadTurnStartCommand = Schema.Struct({
+     text: Schema.String,
+     attachments: Schema.Array(UploadChatAttachment),
++    sender: Schema.optional(Schema.String),
+   }),
+   modelSelection: Schema.optional(ModelSelection),
+@@ -707,4 +710,5 @@ export const ThreadMessageSentPayload = Schema.Struct({
+   turnId: Schema.NullOr(TurnId),
+   streaming: Schema.Boolean,
++  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+   createdAt: IsoDateTime,
+   updatedAt: IsoDateTime,
+diff --git a/packages/contracts/src/server.ts b/packages/contracts/src/server.ts
+index 08910c3e..fe62a51e 100644
+--- a/packages/contracts/src/server.ts
++++ b/packages/contracts/src/server.ts
+@@ -74,4 +74,7 @@ export const ServerConfig = Schema.Struct({
+   availableEditors: Schema.Array(EditorId),
+   settings: ServerSettings,
++  host: Schema.optional(Schema.String),
++  port: Schema.optional(Schema.Number),
++  authToken: Schema.optional(Schema.String),
+ });
+ export type ServerConfig = typeof ServerConfig.Type;
+diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
+index 51fe683f..9f2a016f 100644
+--- a/packages/contracts/src/settings.ts
++++ b/packages/contracts/src/settings.ts
+@@ -84,4 +84,7 @@ export const ServerSettings = Schema.Struct({
+   ),
+ 
++  // Auth
++  authToken: Schema.optional(Schema.String),
++
+   // Provider specific settings
+   providers: Schema.Struct({
+@@ -146,4 +149,5 @@ export const ServerSettingsPatch = Schema.Struct({
+   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
++  authToken: Schema.optionalKey(Schema.NullOr(Schema.String)),
+   providers: Schema.optionalKey(
+     Schema.Struct({
