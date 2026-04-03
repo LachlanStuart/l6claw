@@ -57,13 +57,13 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 
 ## Terminology
 
-| Term        | Definition                                                                                                                                                |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads.                                                                        |
-| **Thread**  | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses.            |
-| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI.                                           |
-| **Turn**    | A single user-message-to-agent-response cycle. A turn is triggered by sending a message.                                                                  |
-| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the web interface.         |
+| Term        | Definition                                                                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads.                                                                |
+| **Thread**  | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses.    |
+| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI.                                   |
+| **Turn**    | A single user-message-to-agent-response cycle. A turn is triggered by sending a message.                                                          |
+| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the web interface. |
 
 ---
 
@@ -79,10 +79,10 @@ Built as a standalone Bun-compiled binary with no external runtime dependencies.
 
 ### Global Options
 
-| Flag               | Env Var        | Required | Description                                                         |
-| ------------------ | -------------- | -------- | ------------------------------------------------------------------- |
-| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the L6 Claw server (e.g. `ws://100.64.1.2:3773`)  |
-| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                             |
+| Flag               | Env Var        | Required | Description                                                       |
+| ------------------ | -------------- | -------- | ----------------------------------------------------------------- |
+| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the L6 Claw server (e.g. `ws://100.64.1.2:3773`) |
+| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                           |
 
 Flag values take precedence over environment variables.
 
