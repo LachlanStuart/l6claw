@@ -1,6 +1,6 @@
 # L6 Claw (built on [T3 Code](https://github.com/pingdotgg/t3code))
 
-L6 Claw is a personal fork of T3 Code that extends it with Claw-like agentic abilities. This is personal software. I will not support it or package it for you. Feel free to take any parts that you want. 
+L6 Claw is a personal fork of T3 Code that extends it with Claw-like agentic abilities. This is personal software. I will not support it or package it for you. Feel free to take any parts that you want.
 
 Eternal gratitude to [Julius Marminge](https://github.com/juliusmarminge), [Theo Browne](https://github.com/t3dotgg), and [T3 Code contributors](https://github.com/pingdotgg/t3code/graphs/contributors) for building and open-sourcing T3 Code.
 
