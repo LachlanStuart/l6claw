@@ -16,7 +16,6 @@ import {
   shell,
 } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
-import * as Effect from "effect/Effect";
 import type {
   DesktopTheme,
   DesktopUpdateActionResult,
@@ -26,9 +25,9 @@ import type {
 import { autoUpdater } from "electron-updater";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
-import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
+import { resolveDesktopBackendBaseUrl, resolveDesktopBackendPort } from "./backendConnection";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
@@ -142,11 +141,9 @@ function readPersistedBackendObservabilitySettings(): {
 
 function backendChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  delete env.T3CODE_PORT;
   delete env.T3CODE_AUTH_TOKEN;
   delete env.T3CODE_MODE;
   delete env.T3CODE_NO_BROWSER;
-  delete env.T3CODE_HOST;
   delete env.T3CODE_DESKTOP_WS_URL;
   return env;
 }
@@ -1430,14 +1427,10 @@ configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
-  backendPort = await Effect.service(NetService).pipe(
-    Effect.flatMap((net) => net.reserveLoopbackPort()),
-    Effect.provide(NetService.layer),
-    Effect.runPromise,
-  );
-  writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
+  backendPort = resolveDesktopBackendPort(process.env);
+  writeDesktopLogHeader(`resolved backend port from config port=${backendPort}`);
   backendAuthToken = Crypto.randomBytes(24).toString("hex");
-  const baseUrl = `ws://127.0.0.1:${backendPort}`;
+  const baseUrl = resolveDesktopBackendBaseUrl(process.env);
   backendWsUrl = `${baseUrl}/?token=${encodeURIComponent(backendAuthToken)}`;
   writeDesktopLogHeader(`bootstrap resolved websocket endpoint baseUrl=${baseUrl}`);
 
