@@ -13,8 +13,8 @@ If this feature needs to be re-implemented (e.g. after rebasing onto a new upstr
 Set your connection details once as environment variables — this avoids repeating them on every call:
 
 ```bash
-export T3CODE_URL=ws://100.x.y.z:3773   # Tailnet IP of the T3 Code host
-export T3CODE_TOKEN=<token>              # From Settings → API Access in the T3 Code UI
+export T3CODE_URL=ws://100.x.y.z:3773   # Tailnet IP of the L6 Claw host
+export T3CODE_TOKEN=<token>              # From Settings → API Access in the L6 Claw UI
 ```
 
 **List all threads:**
@@ -51,7 +51,7 @@ Run `l6claw-cli --help` or `l6claw-cli <command> --help` for full flag documenta
 
 ## Overview
 
-A standalone CLI tool (`l6claw-cli`) that enables remote agents to interact with T3 Code threads over the network. The CLI connects to the T3 Code WebSocket server, sends commands using the existing RPC protocol, and listens for push events to track turn progress.
+A standalone CLI tool (`l6claw-cli`) that enables remote agents to interact with L6 Claw threads over the network. The CLI connects to the L6 Claw WebSocket server and uses the existing RPC protocol to list threads and send messages.
 
 The CLI acts as a security boundary: it exposes an allowlist of safe operations and does not permit approvals, runtime mode changes, settings mutations, thread deletion, or any other privileged operations. The remote agent can read thread state and send messages — nothing more.
 
@@ -63,7 +63,7 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 | **Thread**  | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses.            |
 | **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI.                                           |
 | **Turn**    | A single user-message-to-agent-response cycle. A turn is triggered by sending a message.                                                                  |
-| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the T3 Code web interface. |
+| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the web interface.         |
 
 ---
 
@@ -75,14 +75,26 @@ The CLI acts as a security boundary: it exposes an allowlist of safe operations 
 l6claw-cli
 ```
 
+Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses `@effect/cli` for command/option parsing, consistent with the rest of the codebase.
+
 ### Global Options
 
-| Flag               | Env Var        | Required | Description                                                       |
-| ------------------ | -------------- | -------- | ----------------------------------------------------------------- |
-| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the T3 Code server (e.g. `ws://100.64.1.2:3773`) |
-| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                           |
+| Flag               | Env Var        | Required | Description                                                         |
+| ------------------ | -------------- | -------- | ------------------------------------------------------------------- |
+| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the L6 Claw server (e.g. `ws://100.64.1.2:3773`)  |
+| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                             |
 
 Flag values take precedence over environment variables.
+
+### Connection
+
+The CLI connects via WebSocket with the auth token as a query parameter:
+
+```
+ws://<host>:<port>/?token=<auth-token>
+```
+
+If the token is invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
 
 ### Command: `threads`
 
@@ -112,7 +124,7 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 - Thread titles are truncated to 60 characters with `...` suffix if they exceed that length
 - Archived threads (where `archivedAt` is non-null) are excluded
 - Deleted threads (where `deletedAt` is non-null) are excluded
-- Status is derived from `thread.session.status` if a session exists, otherwise `"idle"`
+- Status is derived from the thread's session status if a session exists, otherwise `"idle"`
 
 **JSON output format:**
 
@@ -132,8 +144,6 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 - Thread titles are NOT truncated in JSON output (full title is included)
 - Same exclusion rules as table output (no archived, no deleted)
 - Array is sorted by project name (ascending), then thread title (ascending)
-
-**Implementation:** Connects to WebSocket, calls `orchestration.getSnapshot` (existing RPC method), formats the `OrchestrationReadModel` response, disconnects.
 
 ### Command: `send`
 
@@ -158,7 +168,7 @@ l6claw-cli send --project <name> --thread <name> --text <message> --sender <name
 
 **Thread resolution:**
 
-Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI always fetches `orchestration.getSnapshot` first to:
+Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI always fetches the full thread snapshot first to:
 
 1. Validate the thread exists
 2. Read the thread's current `runtimeMode` (echoed back in the command to avoid changing it)
@@ -178,7 +188,7 @@ Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI a
 
 **Pre-send validation:**
 
-- If the resolved thread has `session.activeTurnId !== null` (a turn is already running): exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
+- If the resolved thread has an active turn in progress: exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
 
 **Fire-and-forget mode (no `--wait`):**
 
@@ -188,81 +198,53 @@ Dispatches the command and prints acknowledgment to stdout:
 { "status": "accepted", "turnId": null }
 ```
 
-Note: `turnId` is null because turn IDs are assigned asynchronously by the provider adapter, not at command dispatch time. Exit code 0.
+Note: `turnId` is null because turn IDs are assigned asynchronously by the provider, not at command dispatch time. Exit code 0.
 
 **Wait mode (`--wait`):**
 
-Dispatches the command, subscribes to push events, and blocks until the turn completes:
+Dispatches the command, subscribes to server push events, and blocks until the turn completes:
 
 - **Success:** prints each assistant message text to stdout (one per line, in order), exit code 0
 - **Error:** prints any assistant text collected so far to stdout, prints error info to stderr as `{"status": "error", "turnId": "<id>"}`, exit code 1
 - **Timeout:** prints any assistant text collected so far to stdout, prints to stderr as `{"status": "timeout", "turnId": "<id>"}`, exit code 1
 - **Interrupted:** same pattern, stderr `{"status": "interrupted", "turnId": "<id>"}`, exit code 1
 
-**Command construction:**
+The CLI must subscribe to push events **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
 
-The CLI constructs a `thread.turn.start` orchestration command:
-
-```json
-{
-  "type": "thread.turn.start",
-  "commandId": "<generated-uuid>",
-  "threadId": "<resolved-thread-id>",
-  "message": {
-    "messageId": "<generated-uuid>",
-    "role": "user",
-    "text": "<--text value>",
-    "sender": "<--sender value>",
-    "attachments": []
-  },
-  "runtimeMode": "<echoed-from-thread>",
-  "interactionMode": "default",
-  "createdAt": "<iso-datetime>"
-}
-```
-
-Note: `runtimeMode` is read from the thread's current state (via the snapshot) and echoed back in the command. This ensures the CLI never changes a thread's runtime mode. If the thread has no session yet, use the thread's `runtimeMode` field. The CLI does not expose runtime mode configuration as a security constraint.
+**Security constraint:** The `runtimeMode` is always echoed from the thread's current state — the CLI never changes it. The `interactionMode` is always set to `"default"`. This ensures the CLI cannot escalate a thread's permissions.
 
 ---
 
-## Server-Side Changes
+## Sender Field on Messages
 
-### 1. Sender Field on Messages
-
-**Schema addition in `packages/contracts/src/orchestration.ts`:**
-
-Add `sender` to `OrchestrationMessage`:
-
-```typescript
-// New field on OrchestrationMessage schema
-sender: Schema.NullOr(Schema.String); // null for UI-sent messages
-```
+Messages now carry an optional `sender` field:
 
 | Field    | Type             | Default | Constraint                                           |
 | -------- | ---------------- | ------- | ---------------------------------------------------- |
 | `sender` | `string \| null` | `null`  | Max 32 characters, truncated server-side if exceeded |
 
-**Propagation path:**
+Messages sent from the web UI have `sender: null` and render exactly as they do without this feature. Messages sent via the CLI (or any future API client) carry the sender string provided by the caller.
 
-1. `ThreadTurnStartCommand.message` — add optional `sender` field (string)
-2. `ThreadMessageSentPayload` — add `sender` field (string | null)
-3. Orchestration decider — pass `sender` from command to event payload
-4. Projection pipeline — persist `sender` to message storage
-5. Read model / `orchestration.getSnapshot` — include `sender` on `OrchestrationMessage`
-6. WebSocket push events — `sender` included automatically (it's part of the message payload in domain events)
+### Sender Indicator in the UI
 
-Messages sent from the T3 Code web UI omit the `sender` field (or send null), so they render exactly as they do today.
+**Location:** User messages in the messages timeline.
 
-### 2. Auth Token Persistence
+**Rendering rule:** If `message.sender` is non-null and `message.role` is `"user"`, display the sender name inline, immediately to the left of the timestamp.
 
-**New field in `ServerSettings` schema (`packages/contracts/src/settings.ts`):**
+**Styling:**
 
-```typescript
-// New field on ServerSettings
-authToken: Schema.optional(Schema.String);
-```
+- No border, no background, no pill/badge
+- Muted accent colour (distinct from the timestamp colour but similarly understated)
+- Same font size and weight as the timestamp
+- The sender text and timestamp together form a single visual line
 
-**Token lifecycle:**
+**When `sender` is null:** No change to existing rendering.
+
+---
+
+## Auth Token
+
+### Token Lifecycle
 
 | Priority    | Source                                                 | Persistence                                      |
 | ----------- | ------------------------------------------------------ | ------------------------------------------------ |
@@ -274,26 +256,7 @@ authToken: Schema.optional(Schema.String);
 
 **Persistence opt-in:** The UI provides a checkbox to persist the current token. When checked, the token is written to `settings.json`. When unchecked, the token is removed from `settings.json` (continues working for current session, regenerated on next restart).
 
----
-
-## UI Changes
-
-### 1. Sender Indicator on Messages
-
-**Location:** User message component in the messages timeline (currently `MessagesTimeline.tsx`).
-
-**Rendering rule:** If `message.sender` is non-null and `message.role` is `"user"`, display the sender name inline, immediately to the left of the timestamp.
-
-**Styling:**
-
-- No border, no background, no pill/badge
-- Muted accent colour (distinct from the timestamp colour but similarly understated)
-- Same font size and weight as the timestamp
-- The sender text and timestamp together form a single visual line
-
-**When `sender` is null:** No change to existing rendering. Messages from the T3 Code UI appear exactly as they do today.
-
-### 2. API Access Section in Settings
+### API Access Section in Settings
 
 **Location:** Settings view in the web app.
 
@@ -309,217 +272,16 @@ The token field is always read-only in the UI. To use a custom token, set it via
 
 ---
 
-## Wire Protocol Details
-
-The CLI uses the existing T3 Code WebSocket protocol. No new RPC methods or push channels are required.
-
-### Connection
-
-```
-ws://<host>:<port>/?token=<auth-token>
-```
-
-The `token` query parameter is validated during the HTTP upgrade. If invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
-
-### Request Format (Client to Server)
-
-```json
-{
-  "id": "<request-uuid>",
-  "body": {
-    "_tag": "<method-name>",
-    ...method-specific fields
-  }
-}
-```
-
-### Response Format (Server to Client)
-
-```json
-{
-  "id": "<matching-request-uuid>",
-  "result": ...success payload,
-  "error": { "message": "..." }
-}
-```
-
-Exactly one of `result` or `error` is present.
-
-### Push Format (Server to Client, unsolicited)
-
-```json
-{
-  "type": "push",
-  "sequence": 0,
-  "channel": "<channel-name>",
-  "data": ...channel-specific payload
-}
-```
-
-### RPC Methods Used by the CLI
-
-#### `orchestration.getSnapshot`
-
-Returns the full `OrchestrationReadModel` containing all projects and threads.
-
-**Request:**
-
-```json
-{
-  "id": "...",
-  "body": { "_tag": "orchestration.getSnapshot" }
-}
-```
-
-**Response result:** `OrchestrationReadModel` (see schema above).
-
-#### `orchestration.dispatchCommand`
-
-Dispatches an orchestration command. The CLI uses this with `thread.turn.start` commands.
-
-**Request:**
-
-```json
-{
-  "id": "...",
-  "body": {
-    "_tag": "orchestration.dispatchCommand",
-    "command": {
-      "type": "thread.turn.start",
-      "commandId": "<uuid>",
-      "threadId": "<thread-id>",
-      "message": {
-        "messageId": "<uuid>",
-        "role": "user",
-        "text": "...",
-        "sender": "...",
-        "attachments": []
-      },
-      "runtimeMode": "full-access",
-      "interactionMode": "default",
-      "createdAt": "<iso-datetime>"
-    }
-  }
-}
-```
-
-**Response result:** Acknowledgment (command accepted).
-
-### Push Channels Consumed by the CLI
-
-The CLI only needs to listen to the `orchestration.domainEvent` channel when in `--wait` mode.
-
-#### Turn Completion Detection (Wait Mode)
-
-After dispatching the command, the CLI filters push events where `channel === "orchestration.domainEvent"` and `data.aggregateId === threadId`.
-
-**Event correlation flow:**
-
-1. CLI knows: `threadId`, `commandId`, `messageId` (all generated before dispatch)
-2. **Subscribe to push events before dispatching the command** (prevents race conditions)
-3. Dispatch `thread.turn.start` command
-4. Watch for `thread.session-set` events on the target thread where `session.activeTurnId` becomes non-null — this reveals the server-assigned `turnId`
-5. Collect `thread.message-sent` events where `role === "assistant"` on the target thread
-6. Detect completion via:
-   - `thread.turn-diff-completed` event with matching thread (definitive completion signal, carries `completedAt`)
-   - OR `thread.session-set` where `session.status` transitions from `"running"` to `"ready"`, `"idle"`, `"stopped"`, or `"error"` and `session.activeTurnId` becomes null
-
-**Relevant event types and their payloads:**
-
-| Event Type                   | Key Payload Fields                                             | Meaning                                                                                              |
-| ---------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `thread.message-sent`        | `threadId`, `messageId`, `role`, `text`, `turnId`, `streaming` | A message was sent. `role: "assistant"` + `streaming: false` = final assistant text.                 |
-| `thread.session-set`         | `threadId`, `session.status`, `session.activeTurnId`           | Session state changed. `activeTurnId: null` after being non-null = turn ended.                       |
-| `thread.turn-diff-completed` | `threadId`, `turnId`, `completedAt`, `status`                  | Turn checkpoint complete. `status: "ready"` = success, `"error"` = error, `"missing"` = interrupted. |
-
-**Assistant message collection:**
-
-During wait mode, the CLI accumulates text from `thread.message-sent` events where:
-
-- `aggregateId` matches the target `threadId`
-- `payload.role === "assistant"`
-- `payload.streaming === false` (only final/complete messages, not streaming fragments)
-
-A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
-
----
-
-## Package Structure
-
-```
-packages/cli/
-  package.json
-  src/
-    main.ts          # Entry point, @effect/cli command definitions
-    commands/
-      threads.ts     # `threads` command implementation
-      send.ts        # `send` command implementation
-    ws/
-      client.ts      # WebSocket connection, auth, request/response, push subscription
-      protocol.ts    # Message framing, serialisation, correlation
-  tsconfig.json
-```
-
-**package.json scripts:**
-
-```json
-{
-  "name": "@t3tools/cli",
-  "scripts": {
-    "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
-    "dev": "bun run src/main.ts"
-  }
-}
-```
-
-**Framework:** `@effect/cli` for command/option parsing, consistent with the rest of the codebase's use of Effect.
-
-**Runtime:** Bun. The compiled binary has no external runtime dependencies.
-
----
-
-## Configuration File Specification
-
-### settings.json Changes
-
-**File location:** `<stateDir>/settings.json` (typically `~/.t3/userdata/settings.json` or `~/.t3/dev/settings.json`)
-
-**New field:**
-
-```json
-{
-  "authToken": "a1b2c3d4e5f6..."
-}
-```
-
-| Field       | Type     | Presence                                               | Description                                                                                                     |
-| ----------- | -------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `authToken` | `string` | Optional — only present when user has opted to persist | The auth token for WebSocket connections. When absent, the server generates an ephemeral token on each startup. |
-
-This field is added or removed by the UI "Persist across restarts" checkbox. It is never auto-written by the server.
-
-### Existing Configuration (No Changes)
-
-The following existing configuration options are relevant but require no changes:
-
-| Config                               | Source             | Default                                                               | Description                                                 |
-| ------------------------------------ | ------------------ | --------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `T3CODE_PORT` / `--port`             | Env var / CLI flag | `3773`                                                                | Server port                                                 |
-| `T3CODE_HOST` / `--host`             | Env var / CLI flag | `undefined` (all interfaces in web mode, `127.0.0.1` in desktop mode) | Bind address                                                |
-| `T3CODE_AUTH_TOKEN` / `--auth-token` | Env var / CLI flag | None                                                                  | Auth token override (takes precedence over persisted token) |
-
----
-
 ## Security Model
 
 The CLI is a **security boundary** that exposes only safe operations to remote agents.
 
 ### Allowed Operations
 
-| Operation                | RPC Method                                            | Risk                                                                                                                              |
-| ------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| List threads (read-only) | `orchestration.getSnapshot`                           | None — read-only snapshot of project/thread metadata and messages                                                                 |
-| Send user message        | `orchestration.dispatchCommand` (`thread.turn.start`) | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
+| Operation                | Risk                                                                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| List threads (read-only) | None — read-only snapshot of project/thread metadata and messages                                                                 |
+| Send user message        | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
 
 ### Explicitly Disallowed Operations
 
@@ -576,12 +338,30 @@ All errors are printed to stderr as human-readable messages. In `--wait` mode, s
 
 ---
 
+## Data Compatibility
+
+### settings.json
+
+**New field:**
+
+| Field       | Type     | Presence                                               | Description                                                                                                     |
+| ----------- | -------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `authToken` | `string` | Optional — only present when user has opted to persist | The auth token for WebSocket connections. When absent, the server generates an ephemeral token on each startup. |
+
+This field is added or removed by the UI "Persist across restarts" checkbox. It is never auto-written by the server.
+
+### Database Migration
+
+A fork migration adds a `sender` column (`TEXT`, nullable) to the `projection_thread_messages` table. This migration should be idempotent (check if the column exists before altering).
+
+---
+
 ## Future Considerations (Not In Scope)
 
 These are documented for context but are explicitly out of the initial implementation:
 
 - **Read-only thread inspection commands** (e.g., `l6claw-cli thread <id>` to view messages, tool calls, activities) — noted as a likely future addition
-- **REST API** — if needed later, can be added as HTTP routes on the existing server calling the same orchestration dispatch pipeline
-- **Polling endpoint for async turns** — a `GET /api/turns/{turnId}/status` style endpoint could supplement the fire-and-forget mode
+- **REST API** — if needed later, can be added as HTTP routes on the existing server
+- **Polling endpoint for async turns** — a status endpoint could supplement the fire-and-forget mode
 - **Thread creation via CLI** — remote agents can only send to existing threads
 - **Multiple API keys with named identities** — current model uses a single token with self-declared sender names
