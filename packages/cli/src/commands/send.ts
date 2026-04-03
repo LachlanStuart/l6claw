@@ -174,8 +174,8 @@ function printHelp(): never {
   console.log("  --thread <title>     Target thread title (case-insensitive, requires --project).");
   console.log("  --text <message>     Message text to send (required).");
   console.log("  --sender <name>      Sender identity shown in the UI, max 32 chars (required).");
-  console.log("  --wait               Block until agent finishes responding.");
-  console.log("  --timeout <seconds>  Max wait time in seconds (default: 86400, --wait only).");
+  console.log("  --no-wait            Dispatch and exit without waiting for the agent to finish.");
+  console.log("  --timeout <seconds>  Max wait time in seconds (default: 86400).");
   console.log("  --help               Show this help message.");
   process.exit(0);
 }
@@ -204,7 +204,7 @@ export const runSend = (flags: Record<string, string | true>) => {
   const threadIdOpt = typeof flags["thread-id"] === "string" ? flags["thread-id"] : null;
   const projectOpt = typeof flags.project === "string" ? flags.project : null;
   const threadOpt = typeof flags.thread === "string" ? flags.thread : null;
-  const isWait = flags.wait === true;
+  const isWait = flags["no-wait"] !== true;
   const timeoutSec =
     typeof flags.timeout === "string" ? Math.max(1, parseInt(flags.timeout, 10) || 86400) : 86400;
 

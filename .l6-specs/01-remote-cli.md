@@ -24,7 +24,7 @@ l6claw-cli threads              # Human-readable table
 l6claw-cli threads --json       # Machine-readable JSON array
 ```
 
-**Send a message (fire and forget):**
+**Send a message and wait for the agent's response (default):**
 
 ```bash
 l6claw-cli send \
@@ -33,17 +33,17 @@ l6claw-cli send \
   --sender "Build Server"
 ```
 
-**Send a message and wait for the agent's response:**
+By default, `send` blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
+
+**Send a message without waiting (fire and forget):**
 
 ```bash
 l6claw-cli send \
   --thread-id abc123-def4-5678-9012-abcdef345678 \
   --text "What is the status of the refactor?" \
   --sender "Orchestrator" \
-  --wait
+  --no-wait
 ```
-
-The `--wait` flag blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
 
 Run `l6claw-cli --help` or `l6claw-cli <command> --help` for full flag documentation.
 
@@ -152,21 +152,21 @@ other-project    Set up CI pipeline for the new monorepo structure that we...  7
 Send a message to a thread, triggering the agent to act.
 
 ```
-l6claw-cli send --thread-id <id> --text <message> --sender <name> [--wait] [--timeout <seconds>]
-l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--wait] [--timeout <seconds>]
+l6claw-cli send --thread-id <id> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
+l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
 ```
 
 **Options:**
 
-| Flag                  | Required                                                    | Default            | Description                                                                 |
-| --------------------- | ----------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                         |
-| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                             |
-| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`) |
-| `--text <message>`    | Yes                                                         |                    | Message text to send                                                        |
-| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                     |
-| `--wait`              | No                                                          | `false`            | Block until the agent finishes responding                                   |
-| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds (only applies when `--wait` is set)            |
+| Flag                  | Required                                                    | Default            | Description                                                                      |
+| --------------------- | ----------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------- |
+| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                              |
+| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                                  |
+| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`)      |
+| `--text <message>`    | Yes                                                         |                    | Message text to send                                                             |
+| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                          |
+| `--no-wait`           | No                                                          | `false`            | Dispatch and exit immediately without waiting for the agent to finish responding |
+| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds                                                     |
 
 **Thread resolution:**
 
@@ -192,7 +192,11 @@ Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI a
 
 - If the resolved thread has an active turn in progress: exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
 
-**Fire-and-forget mode (no `--wait`):**
+**Wait mode (default):**
+
+Dispatches the command, subscribes to the domain event stream, and blocks until the turn completes:
+
+**Fire-and-forget mode (`--no-wait`):**
 
 Dispatches the command and prints acknowledgment to stdout:
 
@@ -202,9 +206,7 @@ Dispatches the command and prints acknowledgment to stdout:
 
 Note: `turnId` is null because turn IDs are assigned asynchronously by the provider, not at command dispatch time. Exit code 0.
 
-**Wait mode (`--wait`):**
-
-Dispatches the command, subscribes to server push events, and blocks until the turn completes:
+**Wait mode outcomes:**
 
 - **Success:** prints each assistant message text to stdout (one per line, in order), exit code 0
 - **Error:** prints any assistant text collected so far to stdout, prints error info to stderr as `{"status": "error", "turnId": "<id>"}`, exit code 1
