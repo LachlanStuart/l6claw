@@ -1,387 +1,463 @@
-# 01 - Remote CLI
+# 01 - Remote Agent API
 
-**Date:** 2026-04-02
-
-## Re-implementation Notes
-
-If this feature needs to be re-implemented (e.g. after rebasing onto a new upstream), a reference diff is available at `.l6-specs/01-remote-cli.diff`. This diff shows the changes made during the original implementation and is intended as **guidance for locating relevant areas of the codebase** — not as a precise patch to apply. File line numbers and exact code will likely differ after an upstream merge, but the diff makes it clear which files were touched and what shape the changes took.
-
----
-
-## Quick Start (for CLI users)
-
-Set your connection details once as environment variables — this avoids repeating them on every call:
-
-```bash
-export T3CODE_URL=ws://100.x.y.z:3773   # Tailnet IP of the L6 Claw host
-export T3CODE_TOKEN=<token>              # From Settings → API Access in the L6 Claw UI
-```
-
-**List all threads:**
-
-```bash
-l6claw-cli threads              # Human-readable table
-l6claw-cli threads --json       # Machine-readable JSON array
-```
-
-**Send a message and wait for the agent's response (default):**
-
-```bash
-l6claw-cli send \
-  --project "my-project" --thread "Fix the login bug" \
-  --text "Run the test suite and report results." \
-  --sender "Build Server"
-```
-
-By default, `send` blocks until the agent finishes and prints its response text to stdout. Exit code 0 = success, 1 = error/timeout/interrupted. Use `--timeout <seconds>` to override the default 24-hour wait.
-
-**Send a message without waiting (fire and forget):**
-
-```bash
-l6claw-cli send \
-  --thread-id abc123-def4-5678-9012-abcdef345678 \
-  --text "What is the status of the refactor?" \
-  --sender "Orchestrator" \
-  --no-wait
-```
-
-Run `l6claw-cli --help` or `l6claw-cli <command> --help` for full flag documentation.
-
----
+**Date:** 2026-04-04
 
 ## Overview
 
-A standalone CLI tool (`l6claw-cli`) that enables remote agents to interact with L6 Claw threads over the network. The CLI connects to the L6 Claw WebSocket server and uses the existing RPC protocol to list threads and send messages.
+L6 Claw exposes a dedicated remote agent API for external automation. This API is separate from the app's normal WebSocket API and has its own endpoint and token. The bundled CLI, `l6claw-cli`, uses this dedicated API.
 
-The CLI acts as a security boundary: it exposes an allowlist of safe operations and does not permit approvals, runtime mode changes, settings mutations, thread deletion, or any other privileged operations. The remote agent can read thread state and send messages — nothing more.
+The purpose of this feature is:
+
+- to create a real security boundary between the app UI protocol and remote automation
+- to move remote-agent business logic into the server instead of the CLI
+- to let the desktop/server codebase own remote-access behavior, settings inheritance, streaming, and steering
+
+The remote API is intentionally narrow. It allows a remote caller to:
+
+- list threads
+- send a message to an existing thread
+- stream assistant output while the turn runs
+- inject simple steering messages into an active remote interaction
+
+It does not expose approvals, settings changes, runtime-mode changes, destructive thread operations, or the app's general-purpose RPC surface.
+
+---
 
 ## Terminology
 
-| Term        | Definition                                                                                                                                        |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Project** | A workspace/repo. Has a title, workspace root directory, and zero or more threads.                                                                |
-| **Thread**  | A conversation within a project. Has a title, messages, and an optional active provider session. This is the primary entity the CLI addresses.    |
-| **Session** | The runtime provider state attached to a thread (Codex/Claude subprocess). Not directly addressable by the CLI.                                   |
-| **Turn**    | A single user-message-to-agent-response cycle. A turn is triggered by sending a message.                                                          |
-| **Sender**  | A free-form string identifying who sent an API message. Displayed in the UI next to the timestamp. Null for messages sent from the web interface. |
+| Term | Definition |
+| --- | --- |
+| **Remote API** | The dedicated external automation API exposed by L6 Claw for remote agents. |
+| **Remote Access** | A per-thread setting that controls whether the thread may be used through the Remote API. |
+| **Sender** | The caller-provided identity string shown in the UI for a remote-sent user message. |
+| **Steering message** | A short follow-up message injected into a still-running remote interaction to redirect or clarify the work. |
+| **Interaction** | A single remote send operation and its streamed lifecycle, including any steering messages sent while it is active. |
 
 ---
 
-## CLI Interface Contract
+## User-Visible Behavior
 
-### Binary Name
+### Dedicated Remote API
 
+Remote automation no longer connects to the app's normal WebSocket API. Instead, it connects to a separate Remote API endpoint with a separate token.
+
+The Settings screen's `API Access` section is repurposed to show the Remote API endpoint and token only. The app's internal WebSocket endpoint is not presented there.
+
+### Per-Thread Remote Access
+
+Each thread has a `Remote Access` setting with values `Off` and `On`.
+
+- When `Remote Access` is `Off`, the thread still appears in remote thread listings.
+- When `Remote Access` is `Off`, remote callers cannot send messages to that thread.
+- When `Remote Access` is `Off`, remote callers cannot steer an active interaction on that thread.
+- When `Remote Access` is `On`, the thread may be used through the Remote API, subject to the thread's existing chat settings.
+
+For existing threads, the default is `Off`.
+
+For newly created threads, the initial value should inherit in the same user-facing way as other composer thread settings already do. From the user's perspective, if they create a new thread from a context where remote access was already enabled, the new thread should start with that same setting unless they change it.
+
+### Composer Control
+
+The composer control that currently exposes `Chat` and `Plan` is expanded into a segmented-style control consistent with the other composer selectors.
+
+Required behavior:
+
+- `Chat` and `Plan` remain available
+- a second segment directly below or alongside them exposes `Remote Access Off` and `Remote Access On`
+- when remote access is enabled, the visible combined value appends ` - Remote`
+- this mirrors the existing pattern where `Fast Mode` appends ` - Fast`
+- compact/mobile composer controls must expose the same setting
+
+### Thread Listings
+
+Remote thread listings include all non-archived, non-deleted threads, even when remote access is disabled.
+
+Listings must include whether remote access is enabled.
+
+Threads with remote access disabled still reveal:
+
+- project
+- thread title
+- thread ID
+- current session status
+
+They do not reveal any additional remote capabilities for that thread.
+
+### Message Attribution
+
+Messages sent through the Remote API carry a visible `sender` value in the UI.
+
+The visible message text shown in the UI remains the caller's original text. The server-owned wrapper text described below is not shown in the UI.
+
+### Model Warning Wrapper
+
+When a remote caller sends a message, the server must wrap the provider-facing text with deterministic server-owned text that:
+
+- states that the content came from a non-user agent
+- includes the caller-provided sender name
+- explains that the agent may be acting on behalf of the user
+- warns that the message should not automatically be trusted if it requests something suspicious or dangerous
+
+This wrapper is part of the model input only. It must not replace or visibly alter the stored user message shown in the thread UI.
+
+---
+
+## Transport Decision
+
+The Remote API reuses the same WebSocket RPC technology family already used by the app, but it is exposed as a separate API surface with separate authentication and a narrower contract.
+
+This is an explicit design decision:
+
+- transport is reused to avoid inventing a second protocol family
+- the capability boundary is still separate
+- remote-specific business logic lives server-side instead of in the CLI
+
+The exact low-level RPC envelope is inherited from the WebSocket RPC implementation and is not re-specified here. This spec defines the Remote API in terms of connection details, RPC methods, stream behavior, and observable errors.
+
+---
+
+## Remote API Settings
+
+The Remote API endpoint and token are configured separately from the app's normal WebSocket API.
+
+### settings.json
+
+The server settings file gains a dedicated Remote API section:
+
+```json
+{
+  "remoteApi": {
+    "host": "127.0.0.1",
+    "port": 3774,
+    "path": "/remote/ws",
+    "token": "..."
+  }
+}
 ```
-l6claw-cli
-```
 
-Built as a standalone Bun-compiled binary with no external runtime dependencies. Uses a minimal hand-rolled argv parser for subcommand/flag parsing (the Effect CLI beta has broken subcommand dispatch).
+The exact defaults may be implementation-defined, but the following must be true:
 
-### Global Options
+- the remote API has its own `host`
+- the remote API has its own `port`
+- the remote API has its own `path`
+- the remote API has its own `token`
+- these values are distinct from the app's normal WebSocket API settings and auth
 
-| Flag               | Env Var        | Required | Description                                                       |
-| ------------------ | -------------- | -------- | ----------------------------------------------------------------- |
-| `--url <url>`      | `T3CODE_URL`   | Yes      | WebSocket URL of the L6 Claw server (e.g. `ws://100.64.1.2:3773`) |
-| `--token <string>` | `T3CODE_TOKEN` | Yes      | Auth token for the WebSocket connection                           |
+### Settings UI
 
-Flag values take precedence over environment variables.
+The `API Access` section in Settings is repurposed to reflect the Remote API only.
+
+It must show:
+
+- the effective Remote API endpoint URL
+- the Remote API token
+- copy affordances for the values
+
+The UI does not need to expose the app's internal WebSocket endpoint in the `API Access` section.
+
+---
+
+## Remote API Contract
 
 ### Connection
 
-The CLI connects via WebSocket to the server's `/ws` path using the Effect RPC protocol (JSON serialization over WebSocket), with the auth token as a query parameter:
+Remote clients connect to:
 
+```text
+ws://<remote-host>:<remote-port><remote-path>?token=<remote-token>
 ```
-ws://<host>:<port>/ws?token=<auth-token>
+
+If the token is missing or invalid, the connection is rejected.
+
+### Method Categories
+
+The Remote API exposes a dedicated RPC group with these conceptual operations:
+
+- `list threads`
+- `send without waiting`
+- `send and stream`
+- `steer active interaction`
+
+The exact method names may follow the project's normal RPC naming conventions, but they must remain a dedicated remote surface and must not be aliases of the app's general-purpose RPC methods.
+
+### List Threads
+
+The remote thread list operation returns all non-archived, non-deleted threads across all projects.
+
+Each row includes:
+
+- `projectName`
+- `threadTitle`
+- `threadId`
+- `sessionStatus`
+- `remoteAccess`
+
+The list is sorted by project name and thread title.
+
+### Send
+
+The remote send operation accepts either:
+
+- `threadId`
+- or `projectName + threadTitle`
+
+It also accepts:
+
+- `text`
+- `sender`
+
+The server resolves the target thread. The CLI does not own thread-resolution rules.
+
+If the target thread has remote access disabled, the operation is rejected.
+
+### Send And Stream
+
+The streamed send operation behaves like send, but it also opens a stream of assistant output for that interaction.
+
+The stream includes assistant output only. It does not stream tool events, raw orchestration events, or internal protocol details.
+
+The stream must emit assistant output incrementally as it is produced, rather than buffering everything until the turn completes.
+
+Conceptually, a streamed interaction exposes:
+
+- an interaction start event or handle
+- assistant text deltas or chunks
+- assistant message completion boundaries
+- a final terminal outcome such as completed, interrupted, timeout, or error
+
+The exact event shape may follow the project's RPC stream conventions, but callers must be able to reconstruct assistant output in real time without waiting for the entire turn to finish.
+
+### Steering
+
+While a streamed remote interaction is still active, the caller may send steering messages.
+
+Steering rules:
+
+- steering is best-effort and intentionally simple
+- steering is only valid while the streamed interaction is active
+- steering targets the active remote interaction, not an arbitrary historical thread state
+- steering is injected immediately rather than being queued for after completion
+- if the interaction has already ended, the server rejects the steering attempt
+
+The CLI does not need a standalone `steer` command. It uses this API internally while a streamed send is in progress.
+
+---
+
+## Remote API Examples
+
+This section describes the external contract shape. It is illustrative rather than a low-level wire dump.
+
+### Example Thread Row
+
+```json
+{
+  "projectName": "my-project",
+  "threadTitle": "Fix login bug",
+  "threadId": "abc123",
+  "sessionStatus": "running",
+  "remoteAccess": true
+}
 ```
 
-The CLI uses `RpcClient.layerProtocolSocket` with `RpcSerialization.layerJson` and `NodeSocket.layerWebSocket` — the same Effect RPC protocol used by the web app. This means the CLI calls typed RPC methods directly (e.g. `client[ORCHESTRATION_WS_METHODS.getSnapshot]({})`) rather than using a custom wire format.
+### Example Stream Lifecycle
 
-If the token is invalid or missing (when the server has auth configured), the connection is rejected with HTTP 401.
+```json
+{ "type": "started", "interactionId": "ri_123", "threadId": "abc123", "turnId": "turn_1" }
+{ "type": "assistant_message_delta", "messageId": "msg_a1", "textDelta": "I’m checking the repo now.\n" }
+{ "type": "assistant_message_delta", "messageId": "msg_a1", "textDelta": "I found the failing path.\n" }
+{ "type": "assistant_message_completed", "messageId": "msg_a1" }
+{ "type": "completed", "interactionId": "ri_123", "turnId": "turn_1" }
+```
+
+The exact field names may vary, but the observable behavior must remain:
+
+- assistant output appears as it is emitted
+- a caller can tell when a message is complete
+- a caller can tell when the interaction is complete
+
+---
+
+## CLI Contract
+
+### Binary
+
+```text
+l6claw-cli
+```
+
+The standalone CLI is a thin client for the Remote API. Its job is to speak to the Remote API, not to contain remote-agent business logic.
+
+### Global Options
+
+The CLI accepts a Remote API URL and token, either as flags or environment variables.
+
+The exact variable names are an external CLI contract and should be documented alongside the CLI help text. They should refer to the Remote API rather than the app's normal WebSocket API.
 
 ### Command: `threads`
 
-List all threads across all projects.
-
-```
-l6claw-cli threads [--json]
-```
-
-**Options:**
-
-| Flag     | Default | Description                           |
-| -------- | ------- | ------------------------------------- |
-| `--json` | `false` | Output as JSON array instead of table |
-
-**Table output format:**
-
-```
-PROJECT          THREAD                                                       ID                                   STATUS
-my-project       Fix the login bug                                            abc123-def4-5678-9012-abcdef345678   running
-my-project       Implement caching layer                                      def456-abc1-2345-6789-fedcba987654   ready
-other-project    Set up CI pipeline for the new monorepo structure that we...  789abc-def0-1234-5678-abcdef012345   idle
+```text
+l6claw-cli threads
+l6claw-cli threads --json
 ```
 
-**Table output rules:**
+Both human-readable and JSON output include remote-access state.
 
-- Thread titles are truncated to 60 characters with `...` suffix if they exceed that length
-- Archived threads (where `archivedAt` is non-null) are excluded
-- Deleted threads (where `deletedAt` is non-null) are excluded
-- Status is derived from the thread's session status if a session exists, otherwise `"idle"`
+Human-readable output includes columns for:
 
-**JSON output format:**
+- project
+- thread
+- ID
+- status
+- remote access
 
-```json
-[
-  {
-    "projectName": "my-project",
-    "threadTitle": "Fix the login bug",
-    "threadId": "abc123-def4-5678-9012-abcdef345678",
-    "sessionStatus": "running"
-  }
-]
-```
+JSON output includes:
 
-**JSON output rules:**
-
-- Thread titles are NOT truncated in JSON output (full title is included)
-- Same exclusion rules as table output (no archived, no deleted)
-- Array is sorted by project name (ascending), then thread title (ascending)
+- `projectName`
+- `threadTitle`
+- `threadId`
+- `sessionStatus`
+- `remoteAccess`
 
 ### Command: `send`
 
-Send a message to a thread, triggering the agent to act.
-
-```
-l6claw-cli send --thread-id <id> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
-l6claw-cli send --project <name> --thread <name> --text <message> --sender <name> [--no-wait] [--timeout <seconds>]
+```text
+l6claw-cli send --thread-id <id> --text <message> --sender <name>
+l6claw-cli send --project <name> --thread <name> --text <message> --sender <name>
 ```
 
-**Options:**
+Supported behavior:
 
-| Flag                  | Required                                                    | Default            | Description                                                                      |
-| --------------------- | ----------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------- |
-| `--thread-id <id>`    | One of `--thread-id` or (`--project` + `--thread`) required |                    | Target thread by ID                                                              |
-| `--project <name>`    | See above                                                   |                    | Target project by name (case-insensitive match)                                  |
-| `--thread <name>`     | See above                                                   |                    | Target thread by title (case-insensitive match, must pair with `--project`)      |
-| `--text <message>`    | Yes                                                         |                    | Message text to send                                                             |
-| `--sender <name>`     | Yes                                                         |                    | Sender identity displayed in the UI (max 32 characters)                          |
-| `--no-wait`           | No                                                          | `false`            | Dispatch and exit immediately without waiting for the agent to finish responding |
-| `--timeout <seconds>` | No                                                          | `86400` (24 hours) | Maximum wait time in seconds                                                     |
+- target by thread ID
+- target by project name plus thread title
+- `--no-wait` fire-and-forget mode
+- default wait-and-stream mode
 
-**Thread resolution:**
+In wait mode:
 
-Regardless of whether `--thread-id` or `--project`+`--thread` is used, the CLI always fetches the full thread snapshot first to:
+- assistant output is streamed to stdout as it arrives
+- the CLI does not wait until the end to print the accumulated response
+- each line read from stdin while the interaction is active is forwarded as an immediate steering message
+- stdin steering is an escape hatch for long-running turns, not a separate workflow
 
-1. Validate the thread exists
-2. Read the thread's current `runtimeMode` (echoed back in the command to avoid changing it)
-3. Check the thread does not already have an active turn running
-
-**When using `--project` + `--thread`:**
-
-1. Find the project where `project.title` matches `--project` (case-insensitive)
-2. Find the thread where `thread.title` matches `--thread` (case-insensitive) within that project
-3. If zero matches: exit 1 with error message
-4. If multiple matches: exit 1 with error listing the ambiguous matches
-
-**When using `--thread-id`:**
-
-1. Find the thread where `thread.id` matches `--thread-id`
-2. If not found: exit 1 with error message
-
-**Pre-send validation:**
-
-- If the resolved thread has an active turn in progress: exit 1 with error `"Thread has an active turn in progress"`. The CLI does not queue or interrupt — the caller must wait and retry.
-
-**Wait mode (default):**
-
-Dispatches the command, subscribes to the domain event stream, and blocks until the turn completes:
-
-**Fire-and-forget mode (`--no-wait`):**
-
-Dispatches the command and prints acknowledgment to stdout:
-
-```json
-{ "status": "accepted", "turnId": null }
-```
-
-Note: `turnId` is null because turn IDs are assigned asynchronously by the provider, not at command dispatch time. Exit code 0.
-
-**Wait mode outcomes:**
-
-- **Success:** prints each assistant message text to stdout (one per line, in order), exit code 0
-- **Error:** prints any assistant text collected so far to stdout, prints error info to stderr as `{"status": "error", "turnId": "<id>"}`, exit code 1
-- **Timeout:** prints any assistant text collected so far to stdout, prints to stderr as `{"status": "timeout", "turnId": "<id>"}`, exit code 1
-- **Interrupted:** same pattern, stderr `{"status": "interrupted", "turnId": "<id>"}`, exit code 1
-
-The CLI subscribes to the `subscribeOrchestrationDomainEvents` RPC stream **before** dispatching the command to prevent race conditions. A single turn may produce multiple assistant messages (the agent may speak, run tools, then speak again). All are collected in event order.
-
-**Streaming message accumulation:** Assistant messages arrive as multiple `thread.message-sent` domain events with `streaming: true` (each carrying a text delta/chunk), followed by a final event with `streaming: false` (with empty text). The CLI accumulates streaming chunks per `messageId` and finalizes the complete message text when the `streaming: false` event arrives.
-
-**Security constraint:** The `runtimeMode` is always echoed from the thread's current state — the CLI never changes it. The `interactionMode` is always set to `"default"`. This ensures the CLI cannot escalate a thread's permissions.
+If steering is attempted after the interaction has ended, the CLI reports the failure simply and continues or exits according to the interaction state.
 
 ---
 
-## Sender Field on Messages
+## Inheritance And Thread Settings
 
-Messages now carry an optional `sender` field:
+The Remote API must respect the target thread's current chat settings.
 
-| Field    | Type             | Default | Constraint                                           |
-| -------- | ---------------- | ------- | ---------------------------------------------------- |
-| `sender` | `string \| null` | `null`  | Max 32 characters, truncated server-side if exceeded |
+From the user's perspective, a remote send should behave like sending a message through the UI on that same thread, except that:
 
-Messages sent from the web UI have `sender: null` and render exactly as they do without this feature. Messages sent via the CLI (or any future API client) carry the sender string provided by the caller.
+- the sender is shown as the remote caller identity
+- the provider-facing text includes the hidden server-owned wrapper
 
-### Sender Indicator in the UI
+Specifically, remote sends must inherit and respect the target thread's current:
 
-**Location:** User messages in the messages timeline.
+- model selection
+- reasoning or thinking settings associated with that thread
+- interaction mode such as `Chat` or `Plan`
+- runtime or access-control mode such as supervised vs full access
 
-**Rendering rule:** If `message.sender` is non-null and `message.role` is `"user"`, display the sender name inline, immediately to the left of the timestamp.
-
-**Styling:**
-
-- No border, no background, no pill/badge
-- Muted accent colour (distinct from the timestamp colour but similarly understated)
-- Same font size and weight as the timestamp
-- The sender text and timestamp together form a single visual line
-
-**When `sender` is null:** No change to existing rendering.
-
----
-
-## Auth Token
-
-### Token Lifecycle
-
-| Priority    | Source                                                 | Persistence                                      |
-| ----------- | ------------------------------------------------------ | ------------------------------------------------ |
-| 1 (highest) | `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag | Never persisted (runtime only)                   |
-| 2           | `authToken` field in `settings.json`                   | Persisted (user opted in)                        |
-| 3 (lowest)  | Auto-generated on startup                              | In-memory only (ephemeral, changes each restart) |
-
-**Auto-generation:** On startup, if no token is available from priorities 1 or 2, generate a cryptographically random 32-byte hex string and hold it in memory for the session.
-
-**Persistence opt-in:** The UI provides a checkbox to persist the current token. When checked, the token is written to `settings.json`. When unchecked, the token is removed from `settings.json` (continues working for current session, regenerated on next restart).
-
-### API Access Section in Settings
-
-**Location:** Settings view in the web app.
-
-**Contents:**
-
-| Element              | Description                                                                                         |
-| -------------------- | --------------------------------------------------------------------------------------------------- |
-| **Endpoint URL**     | Read-only text showing `ws://<host>:<port>` computed from the server's actual bind address and port |
-| **Auth Token**       | Read-only text field, masked by default, with reveal and copy buttons                               |
-| **Persist checkbox** | "Persist across restarts" — toggles whether the token is saved to `settings.json`                   |
-
-The token field is always read-only in the UI. To use a custom token, set it via the `T3CODE_AUTH_TOKEN` env var or `--auth-token` CLI flag.
-
-### Desktop Runtime Requirement
-
-When L6 Claw runs as the desktop app, the embedded server must follow the same stable port selection rules as the standalone server instead of reserving a fresh ephemeral port on each launch.
-
-- If `T3CODE_HOST` is set, the desktop app must bind the embedded server to that host/interface.
-- If `T3CODE_HOST` is unset, the desktop app must use the normal desktop default host `127.0.0.1`.
-- If `T3CODE_PORT` is set, the desktop app must bind the embedded server to that port.
-- If `T3CODE_PORT` is unset, the desktop app must use the normal desktop default port `3773`.
-- Restarting the desktop app must not change the host or port unless the configured values change.
-
-This host override must work when the desktop app is launched through the normal project task runner (`bun run start:desktop`), not only when Electron is started directly.
-
-This requirement exists so local helper processes and external automation can reconnect to the desktop-hosted WebSocket endpoint without rediscovering a new port after every restart.
+This requirement exists so that remote sends behave consistently with the thread the user configured in the UI.
 
 ---
 
 ## Security Model
 
-The CLI is a **security boundary** that exposes only safe operations to remote agents.
+The Remote API is a security boundary.
 
 ### Allowed Operations
 
-| Operation                | Risk                                                                                                                              |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| List threads (read-only) | None — read-only snapshot of project/thread metadata and messages                                                                 |
-| Send user message        | Low — equivalent to typing in the chat. The thread's existing runtime mode governs whether the agent needs approval for tool use. |
+- list threads
+- send message to an existing thread with remote access enabled
+- stream assistant output for that remote interaction
+- steer that active remote interaction
 
-### Explicitly Disallowed Operations
+### Disallowed Operations
 
-The CLI does not expose and must not be extended to expose:
+The Remote API must not expose:
 
-| Operation                      | Why Disallowed                                                                    |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| Approve/decline tool execution | Remote agent must not be able to bypass human approval gates                      |
-| Change runtime mode            | Remote agent must not escalate a thread from `approval-required` to `full-access` |
-| Delete/archive threads         | Destructive operation, local user only                                            |
-| Modify settings                | Server configuration is local user only                                           |
-| Create/delete projects         | Workspace management is local user only                                           |
-| Write files                    | Direct filesystem access is local user only                                       |
-| Terminal access                | Shell access is local user only                                                   |
+- approval responses
+- runtime-mode changes
+- interaction-mode changes
+- settings mutation
+- project creation or deletion
+- thread deletion or archive operations
+- direct terminal access
+- general filesystem mutation outside what the thread's existing agent permissions already allow through a normal turn
+- the app's broader RPC surface
 
 ### Trust Model
 
-- Anyone with the auth token is trusted to perform allowed operations
-- The token is the sole authentication mechanism
-- Network security (Tailnet WireGuard encryption, ACLs) is assumed to provide transport security
-- The sender field is self-declared and trusted — there is no server-side identity verification beyond the token
+- possession of the Remote API token grants access to the allowed Remote API operations
+- the remote sender name is caller-declared and is not tied to token identity
+- the server-owned wrapper text exists to inform the model that a non-user agent supplied the message and that suspicious requests should not be trusted automatically
+
+### Remote Access Gate
+
+Per-thread remote access is the first authorization gate.
+
+If a thread has remote access disabled:
+
+- it still appears in thread listings
+- sends are rejected
+- streamed sends are rejected
+- steering is rejected
 
 ---
 
 ## Error Handling
 
-### CLI Exit Codes
+The exact error envelope may follow the RPC framework's normal conventions, but the following observable cases must be distinguishable to callers:
 
-| Code | Meaning                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------ |
-| 0    | Success                                                                                                |
-| 1    | Error (connection failure, auth failure, timeout, command rejected, thread not found, ambiguous match) |
+- invalid or missing remote token
+- thread not found
+- ambiguous `project + thread title` match
+- thread archived or deleted
+- remote access disabled for target thread
+- thread unavailable for the requested operation
+- steering rejected because the interaction already ended
+- timeout
+- interrupted turn
+- server-side failure
 
-### Error Output
+The CLI must surface these failures clearly to the caller.
 
-All errors are printed to stderr as human-readable messages. In `--wait` mode, structured status is also printed to stderr as JSON (see `send` command spec above).
-
-### Connection Errors
-
-| Scenario                    | Behavior                                                            |
-| --------------------------- | ------------------------------------------------------------------- |
-| Server unreachable          | Exit 1 with "Connection failed: <url>"                              |
-| Auth rejected (401)         | Exit 1 with "Authentication failed: invalid token"                  |
-| Connection lost during wait | Exit 1 with partial output + `{"status": "error", "turnId": "..."}` |
-
-### Send Errors
-
-| Scenario                   | Behavior                                            |
-| -------------------------- | --------------------------------------------------- |
-| Thread not found           | Exit 1 with "Thread not found: <id or name>"        |
-| Ambiguous name match       | Exit 1 with "Multiple threads match: <list>"        |
-| Thread has active turn     | Exit 1 with "Thread has an active turn in progress" |
-| Command rejected by server | Exit 1 with server error message                    |
+When a streamed send fails after partial assistant output has already been emitted, the partial assistant output remains visible on stdout and the failure is still reported.
 
 ---
 
 ## Data Compatibility
 
-### settings.json
+### Thread Data
 
-**New field:**
+Thread state gains a persisted `remoteAccess` flag.
 
-| Field       | Type     | Presence                                               | Description                                                                                                     |
-| ----------- | -------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `authToken` | `string` | Optional — only present when user has opted to persist | The auth token for WebSocket connections. When absent, the server generates an ephemeral token on each startup. |
+This requires durable storage so that:
 
-This field is added or removed by the UI "Persist across restarts" checkbox. It is never auto-written by the server.
+- remote-access state survives restarts
+- the UI can show the flag consistently
+- thread listings can report the flag
+- the Remote API can enforce the flag authoritatively
 
-### Database Migration
+### Message Data
 
-A fork migration adds a `sender` column (`TEXT`, nullable) to the `projection_thread_messages` table. This migration should be idempotent (check if the column exists before altering).
+Visible message data includes the caller `sender` field as part of the message model and UI behavior.
+
+### Settings Data
+
+The server settings file gains dedicated Remote API configuration fields rather than reusing the app WebSocket auth settings.
 
 ---
 
-## Future Considerations (Not In Scope)
+## Non-Goals
 
-These are documented for context but are explicitly out of the initial implementation:
+These are intentionally out of scope for this feature specification:
 
-- **Read-only thread inspection commands** (e.g., `l6claw-cli thread <id>` to view messages, tool calls, activities) — noted as a likely future addition
-- **REST API** — if needed later, can be added as HTTP routes on the existing server
-- **Polling endpoint for async turns** — a status endpoint could supplement the fire-and-forget mode
-- **Thread creation via CLI** — remote agents can only send to existing threads
-- **Multiple API keys with named identities** — current model uses a single token with self-declared sender names
+- a standalone CLI `steer` command
+- exposing tool calls or raw orchestration events to remote callers
+- remote creation of new threads or projects
+- linking sender identities to specific tokens
+- exposing the app's normal WebSocket API details in the Settings `API Access` section
+- turning this spec into an implementation plan or code walkthrough
