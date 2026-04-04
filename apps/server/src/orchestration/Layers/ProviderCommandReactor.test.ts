@@ -261,6 +261,7 @@ describe("ProviderCommandReactor", () => {
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
+        remoteAccess: false,
         branch: null,
         worktreePath: null,
         createdAt: now,

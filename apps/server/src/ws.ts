@@ -41,6 +41,7 @@ import { TerminalManager } from "./terminal/Services/Manager";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem";
 import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths";
+import { resolveRemoteApiRuntimeConfig } from "./remoteApiConfig";
 
 const WsRpcLayer = WsRpcGroup.toLayer(
   Effect.gen(function* () {
@@ -75,6 +76,7 @@ const WsRpcLayer = WsRpcGroup.toLayer(
         host: config.host,
         port: config.port,
         authToken: config.authToken,
+        remoteApi: resolveRemoteApiRuntimeConfig(settings),
         observability: {
           logsDirectoryPath: config.logsDir,
           localTracingEnabled: true,

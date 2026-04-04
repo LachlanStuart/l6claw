@@ -574,6 +574,19 @@ export function GeneralSettingsPanel() {
   const serverProviders = useServerProviders();
   const codexHomePath = settings.providers.codex.homePath;
   const logsDirectoryPath = observability?.logsDirectoryPath ?? null;
+  const configuredRemoteHost =
+    settings.remoteApi.host.trim().length > 0
+      ? settings.remoteApi.host.trim()
+      : DEFAULT_UNIFIED_SETTINGS.remoteApi.host;
+  const configuredRemotePath = (() => {
+    const trimmed = settings.remoteApi.path.trim();
+    if (trimmed.length === 0) {
+      return DEFAULT_UNIFIED_SETTINGS.remoteApi.path;
+    }
+    return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  })();
+  const configuredRemoteUrl = `ws://${configuredRemoteHost}:${settings.remoteApi.port}${configuredRemotePath}`;
+  const effectiveRemoteUrl = serverConfig?.remoteApi?.url ?? configuredRemoteUrl;
   const diagnosticsDescription = (() => {
     const exports: string[] = [];
     if (observability?.otlpTracesEnabled && observability.otlpTracesUrl) {
@@ -1417,23 +1430,18 @@ export function GeneralSettingsPanel() {
       <SettingsSection title="API Access">
         <SettingsRow
           title="Endpoint URL"
-          description="Connection details for remote agents using l6claw-cli."
+          description="Runtime WebSocket endpoint for remote agents using l6claw-cli."
           control={
             <div className="flex items-center gap-2">
               <code className="truncate rounded-md bg-muted px-3 py-1.5 text-xs">
-                {serverConfig
-                  ? `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`
-                  : "Loading..."}
+                {effectiveRemoteUrl}
               </code>
               <Button
                 type="button"
                 size="xs"
                 variant="outline"
                 onClick={() => {
-                  if (!serverConfig) return;
-                  void navigator.clipboard.writeText(
-                    `ws://${serverConfig.host ?? "localhost"}:${serverConfig.port ?? 3773}`,
-                  );
+                  void navigator.clipboard.writeText(effectiveRemoteUrl);
                 }}
               >
                 Copy
@@ -1443,13 +1451,77 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Auth Token"
+          title="Host"
+          description="Listener hostname for the dedicated remote agent API. Restart required after changes."
+          control={
+            <Input
+              value={settings.remoteApi.host}
+              onChange={(event) =>
+                updateSettings({
+                  remoteApi: {
+                    ...settings.remoteApi,
+                    host: event.target.value,
+                  },
+                })
+              }
+              placeholder={DEFAULT_UNIFIED_SETTINGS.remoteApi.host}
+              spellCheck={false}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Port"
+          description="Listener port for the dedicated remote agent API. Restart required after changes."
+          control={
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={String(settings.remoteApi.port)}
+              onChange={(event) => {
+                const nextPort = Number.parseInt(event.target.value, 10);
+                if (Number.isNaN(nextPort)) {
+                  return;
+                }
+                updateSettings({
+                  remoteApi: {
+                    ...settings.remoteApi,
+                    port: nextPort,
+                  },
+                });
+              }}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Path"
+          description="WebSocket path for the dedicated remote agent API. Restart required after changes."
+          control={
+            <Input
+              value={settings.remoteApi.path}
+              onChange={(event) =>
+                updateSettings({
+                  remoteApi: {
+                    ...settings.remoteApi,
+                    path: event.target.value,
+                  },
+                })
+              }
+              placeholder={DEFAULT_UNIFIED_SETTINGS.remoteApi.path}
+              spellCheck={false}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Token"
           description="Secret token used to authenticate remote agent connections."
           control={
             <div className="flex items-center gap-2">
               <code className="truncate rounded-md bg-muted px-3 py-1.5 font-mono text-xs">
                 {isTokenRevealed
-                  ? (serverConfig?.authToken ?? "—")
+                  ? settings.remoteApi.token || "—"
                   : "••••••••••••••••••••••••••••••••"}
               </code>
               <Button
@@ -1465,7 +1537,7 @@ export function GeneralSettingsPanel() {
                 size="xs"
                 variant="outline"
                 onClick={() => {
-                  void navigator.clipboard.writeText(serverConfig?.authToken ?? "");
+                  void navigator.clipboard.writeText(settings.remoteApi.token);
                 }}
               >
                 Copy
@@ -1475,21 +1547,22 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Persist across restarts"
-          description="Save the auth token to disk so it is restored when the server restarts."
+          title="Edit Token"
+          description="Persisted token value. Changes apply immediately to authentication."
           control={
-            <Switch
-              checked={settings.authToken !== undefined}
-              onCheckedChange={(checked) => {
-                if (checked) {
-                  void updateSettings({
-                    authToken: serverConfig?.authToken ?? undefined,
-                  });
-                } else {
-                  void ensureNativeApi().server.updateSettings({ authToken: null });
-                }
-              }}
-              aria-label="Persist auth token across restarts"
+            <Input
+              type={isTokenRevealed ? "text" : "password"}
+              value={settings.remoteApi.token}
+              onChange={(event) =>
+                updateSettings({
+                  remoteApi: {
+                    ...settings.remoteApi,
+                    token: event.target.value,
+                  },
+                })
+              }
+              placeholder="Required"
+              spellCheck={false}
             />
           }
         />

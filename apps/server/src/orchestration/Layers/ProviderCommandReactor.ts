@@ -26,6 +26,7 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { formatRemoteAgentMessage } from "../../remoteApi.ts";
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -567,7 +568,7 @@ const make = Effect.gen(function* () {
 
     yield* sendTurnForThread({
       threadId: event.payload.threadId,
-      messageText: message.text,
+      messageText: formatRemoteAgentMessage(message.text, message.sender),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }

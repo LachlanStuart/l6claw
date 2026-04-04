@@ -102,6 +102,14 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "./ui/button";
+import {
+  Menu,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator as MenuDivider,
+  MenuTrigger,
+} from "./ui/menu";
 import { Separator } from "./ui/separator";
 import { cn, randomUUID } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -825,6 +833,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const remoteAccess = activeThread?.remoteAccess ?? false;
   const isServerThread = serverThread !== undefined;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
@@ -2006,6 +2015,51 @@ export default function ChatView({ threadId }: ChatViewProps) {
       threadId,
     ],
   );
+  const handleRemoteAccessChange = useCallback(
+    async (enabled: boolean) => {
+      if (enabled === remoteAccess) return;
+
+      if (isLocalDraftThread) {
+        setDraftThreadContext(threadId, { remoteAccess: enabled });
+        scheduleComposerFocus();
+        return;
+      }
+
+      if (!serverThread) {
+        return;
+      }
+
+      const api = readNativeApi();
+      if (!api) {
+        return;
+      }
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.remote-access.set",
+          commandId: newCommandId(),
+          threadId,
+          remoteAccess: enabled,
+          createdAt: new Date().toISOString(),
+        });
+        scheduleComposerFocus();
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to update remote access",
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        });
+      }
+    },
+    [
+      isLocalDraftThread,
+      remoteAccess,
+      scheduleComposerFocus,
+      serverThread,
+      setDraftThreadContext,
+      threadId,
+    ],
+  );
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
@@ -3013,6 +3067,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           modelSelection: threadCreateModelSelection,
           runtimeMode,
           interactionMode,
+          remoteAccess,
           branch: nextThreadBranch,
           worktreePath: nextThreadWorktreePath,
           createdAt: activeThread.createdAt,
@@ -3460,6 +3515,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         modelSelection: nextThreadModelSelection,
         runtimeMode,
         interactionMode: "default",
+        remoteAccess,
         branch: activeThread.branch,
         worktreePath: activeThread.worktreePath,
         createdAt,
@@ -3522,6 +3578,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    remoteAccess,
     resetLocalDispatch,
     runtimeMode,
     selectedPromptEffort,
@@ -4252,8 +4309,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             )}
                             interactionMode={interactionMode}
                             planSidebarOpen={planSidebarOpen}
+                            remoteAccess={remoteAccess}
                             runtimeMode={runtimeMode}
                             traitsMenuContent={providerTraitsMenuContent}
+                            onRemoteAccessChange={handleRemoteAccessChange}
                             onToggleInteractionMode={toggleInteractionMode}
                             onTogglePlanSidebar={togglePlanSidebar}
                             onToggleRuntimeMode={toggleRuntimeMode}
@@ -4275,23 +4334,55 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               className="mx-0.5 hidden h-4 sm:block"
                             />
 
-                            <Button
-                              variant="ghost"
-                              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-                              size="sm"
-                              type="button"
-                              onClick={toggleInteractionMode}
-                              title={
-                                interactionMode === "plan"
-                                  ? "Plan mode — click to return to normal chat mode"
-                                  : "Default mode — click to enter plan mode"
-                              }
-                            >
-                              <BotIcon />
-                              <span className="sr-only sm:not-sr-only">
-                                {interactionMode === "plan" ? "Plan" : "Chat"}
-                              </span>
-                            </Button>
+                            <Menu>
+                              <MenuTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                                    size="sm"
+                                    type="button"
+                                    title="Conversation mode and remote access"
+                                  />
+                                }
+                              >
+                                <BotIcon />
+                                <span>
+                                  {interactionMode === "plan" ? "Plan" : "Chat"}
+                                  {remoteAccess ? " - Remote" : ""}
+                                </span>
+                                <ChevronDownIcon className="size-3.5 opacity-70" />
+                              </MenuTrigger>
+                              <MenuPopup align="start">
+                                <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                                  Mode
+                                </div>
+                                <MenuRadioGroup
+                                  value={interactionMode}
+                                  onValueChange={(value) => {
+                                    if (value !== "default" && value !== "plan") return;
+                                    void handleInteractionModeChange(value);
+                                  }}
+                                >
+                                  <MenuRadioItem value="default">Chat</MenuRadioItem>
+                                  <MenuRadioItem value="plan">Plan</MenuRadioItem>
+                                </MenuRadioGroup>
+                                <MenuDivider />
+                                <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                                  Remote Access
+                                </div>
+                                <MenuRadioGroup
+                                  value={remoteAccess ? "on" : "off"}
+                                  onValueChange={(value) => {
+                                    if (value !== "on" && value !== "off") return;
+                                    void handleRemoteAccessChange(value === "on");
+                                  }}
+                                >
+                                  <MenuRadioItem value="off">Off</MenuRadioItem>
+                                  <MenuRadioItem value="on">On</MenuRadioItem>
+                                </MenuRadioGroup>
+                              </MenuPopup>
+                            </Menu>
 
                             <Separator
                               orientation="vertical"

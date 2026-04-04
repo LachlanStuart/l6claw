@@ -30,6 +30,7 @@ export function buildLocalDraftThread(
     modelSelection: fallbackModelSelection,
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
+    remoteAccess: draftThread.remoteAccess ?? false,
     session: null,
     messages: [],
     error,

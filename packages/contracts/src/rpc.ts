@@ -69,6 +69,16 @@ import {
   ServerUpsertKeybindingResult,
 } from "./server";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings";
+import {
+  RemoteApiError,
+  RemoteAssistantStreamEvent,
+  RemoteThreadSendAccepted,
+  RemoteThreadSendInput,
+  RemoteThreadSteerAccepted,
+  RemoteThreadSteerInput,
+  RemoteThreadsListInput,
+  RemoteThreadsListResult,
+} from "./remote";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -114,6 +124,13 @@ export const WS_METHODS = {
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
+} as const;
+
+export const REMOTE_API_METHODS = {
+  threadsList: "remote.threads.list",
+  threadSend: "remote.thread.send",
+  threadSendAndStream: "remote.thread.sendAndStream",
+  threadSteer: "remote.thread.steer",
 } as const;
 
 export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -321,6 +338,31 @@ export const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServer
   stream: true,
 });
 
+export const RemoteThreadsListRpc = Rpc.make(REMOTE_API_METHODS.threadsList, {
+  payload: RemoteThreadsListInput,
+  success: RemoteThreadsListResult,
+  error: RemoteApiError,
+});
+
+export const RemoteThreadSendRpc = Rpc.make(REMOTE_API_METHODS.threadSend, {
+  payload: RemoteThreadSendInput,
+  success: RemoteThreadSendAccepted,
+  error: RemoteApiError,
+});
+
+export const RemoteThreadSendAndStreamRpc = Rpc.make(REMOTE_API_METHODS.threadSendAndStream, {
+  payload: RemoteThreadSendInput,
+  success: RemoteAssistantStreamEvent,
+  error: RemoteApiError,
+  stream: true,
+});
+
+export const RemoteThreadSteerRpc = Rpc.make(REMOTE_API_METHODS.threadSteer, {
+  payload: RemoteThreadSteerInput,
+  success: RemoteThreadSteerAccepted,
+  error: RemoteApiError,
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -356,4 +398,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationReplayEventsRpc,
+);
+
+export const RemoteApiRpcGroup = RpcGroup.make(
+  RemoteThreadsListRpc,
+  RemoteThreadSendRpc,
+  RemoteThreadSendAndStreamRpc,
+  RemoteThreadSteerRpc,
 );

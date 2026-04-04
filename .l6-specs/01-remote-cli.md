@@ -25,13 +25,13 @@ It does not expose approvals, settings changes, runtime-mode changes, destructiv
 
 ## Terminology
 
-| Term | Definition |
-| --- | --- |
-| **Remote API** | The dedicated external automation API exposed by L6 Claw for remote agents. |
-| **Remote Access** | A per-thread setting that controls whether the thread may be used through the Remote API. |
-| **Sender** | The caller-provided identity string shown in the UI for a remote-sent user message. |
-| **Steering message** | A short follow-up message injected into a still-running remote interaction to redirect or clarify the work. |
-| **Interaction** | A single remote send operation and its streamed lifecycle, including any steering messages sent while it is active. |
+| Term                 | Definition                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Remote API**       | The dedicated external automation API exposed by L6 Claw for remote agents.                                         |
+| **Remote Access**    | A per-thread setting that controls whether the thread may be used through the Remote API.                           |
+| **Sender**           | The caller-provided identity string shown in the UI for a remote-sent user message.                                 |
+| **Steering message** | A short follow-up message injected into a still-running remote interaction to redirect or clarify the work.         |
+| **Interaction**      | A single remote send operation and its streamed lifecycle, including any steering messages sent while it is active. |
 
 ---
 

@@ -1,196 +1,62 @@
-import { Cause, Deferred, Duration, Effect, Fiber, Ref, Stream } from "effect";
+import { Cause, Deferred, Effect, Queue, Stream } from "effect";
 import { RpcClient } from "effect/unstable/rpc";
 import {
-  CommandId,
-  MessageId,
-  ORCHESTRATION_WS_METHODS,
-  WS_METHODS,
-  WsRpcGroup,
-} from "@t3tools/contracts";
-import type {
-  OrchestrationEvent,
-  OrchestrationReadModel,
-  RuntimeMode,
+  REMOTE_API_METHODS,
+  RemoteApiRpcGroup,
   ThreadId,
+  type RemoteThreadTarget,
 } from "@t3tools/contracts";
 import { makeRpcLayer } from "../ws/client";
 
-// ── Thread resolution ───────────────────────────────────────────────────
-
-interface ResolvedThread {
-  threadId: ThreadId;
-  runtimeMode: RuntimeMode;
-}
-
-function resolveThread(
-  snapshot: OrchestrationReadModel,
-  opts: { threadId?: string | null; project?: string | null; thread?: string | null },
-): ResolvedThread {
-  if (opts.threadId) {
-    const found = snapshot.threads.find((t) => t.id === opts.threadId);
-    if (!found) {
-      console.error(`Thread not found: ${opts.threadId}`);
-      process.exit(1);
-    }
-    if (found.deletedAt || found.archivedAt) {
-      console.error(`Thread is archived or deleted: ${opts.threadId}`);
-      process.exit(1);
-    }
-    if (found.session?.activeTurnId) {
-      console.error("Thread has an active turn in progress");
-      process.exit(1);
-    }
-    return { threadId: found.id, runtimeMode: found.runtimeMode };
-  }
-  if (!opts.project || !opts.thread) {
-    console.error("Either --thread-id or both --project and --thread are required.");
-    process.exit(1);
-  }
-  const matchedProjects = snapshot.projects.filter(
-    (p) => p.title.toLowerCase() === opts.project!.toLowerCase(),
-  );
-  if (matchedProjects.length === 0) {
-    console.error(`Project not found: ${opts.project}`);
-    process.exit(1);
-  }
-  const projectIds = new Set(matchedProjects.map((p) => p.id));
-  const matchedThreads = snapshot.threads.filter(
-    (t) =>
-      projectIds.has(t.projectId) &&
-      t.title.toLowerCase() === opts.thread!.toLowerCase() &&
-      !t.archivedAt &&
-      !t.deletedAt,
-  );
-  if (matchedThreads.length === 0) {
-    console.error(`Thread not found: "${opts.thread}" in project "${opts.project}"`);
-    process.exit(1);
-  }
-  if (matchedThreads.length > 1) {
-    console.error(
-      `Multiple threads match: ${matchedThreads.map((t) => `"${t.title}" (${t.id})`).join(", ")}`,
-    );
-    process.exit(1);
-  }
-  const found = matchedThreads[0]!;
-  if (found.session?.activeTurnId) {
-    console.error("Thread has an active turn in progress");
-    process.exit(1);
-  }
-  return { threadId: found.id, runtimeMode: found.runtimeMode };
-}
-
-// ── Wait-mode state machine ─────────────────────────────────────────────
-
-type TurnStatus = "running" | "completed" | "error" | "interrupted" | "timeout";
-
-interface WaitState {
-  turnId: string | null;
-  sessionWasRunning: boolean;
-  /** Completed (non-streaming) assistant messages. */
-  messages: string[];
-  /** In-flight streaming chunks keyed by messageId. */
-  streamingChunks: Map<string, string>;
-  status: TurnStatus;
-}
-
-const INITIAL_WAIT_STATE: WaitState = {
-  turnId: null,
-  sessionWasRunning: false,
-  messages: [],
-  streamingChunks: new Map(),
-  status: "running",
-};
-
-/**
- * Process a single domain event and return the updated wait state.
- * Only events for the target thread are relevant.
- */
-function processEvent(state: WaitState, event: OrchestrationEvent, threadId: string): WaitState {
-  if (event.aggregateId !== threadId) return state;
-
-  if (event.type === "thread.session-set") {
-    const session = event.payload.session;
-    const newTurnId = state.turnId ?? (session.activeTurnId || null);
-    const nowRunning = state.sessionWasRunning || !!session.activeTurnId;
-
-    if (nowRunning && !session.activeTurnId) {
-      let status: TurnStatus;
-      if (session.status === "error") status = "error";
-      else if (session.status === "stopped" || session.status === "interrupted")
-        status = "interrupted";
-      else status = "completed";
-      return { ...state, turnId: newTurnId, sessionWasRunning: nowRunning, status };
-    }
-    return { ...state, turnId: newTurnId, sessionWasRunning: nowRunning };
-  }
-
-  if (event.type === "thread.message-sent") {
-    const { role, text, streaming } = event.payload;
-    const messageId = event.payload.messageId;
-    if (role === "assistant") {
-      if (streaming) {
-        // Accumulate streaming delta chunk
-        const chunks = new Map(state.streamingChunks);
-        chunks.set(messageId, (chunks.get(messageId) ?? "") + text);
-        return { ...state, streamingChunks: chunks };
-      } else {
-        // Streaming complete — use explicit text if non-empty, otherwise accumulated chunks
-        const accumulated = state.streamingChunks.get(messageId) ?? "";
-        const finalText = text.length > 0 ? text : accumulated;
-        const chunks = new Map(state.streamingChunks);
-        chunks.delete(messageId);
-        return {
-          ...state,
-          streamingChunks: chunks,
-          messages: [...state.messages, finalText],
-        };
-      }
-    }
-    return state;
-  }
-
-  if (event.type === "thread.turn-diff-completed") {
-    const turnStatus = event.payload.status;
-    const status: TurnStatus =
-      turnStatus === "ready" ? "completed" : turnStatus === "error" ? "error" : "interrupted";
-    return { ...state, status };
-  }
-
-  return state;
-}
-
-// ── Help ────────────────────────────────────────────────────────────────
-
-function printHelp(): never {
+function printHelp() {
   console.log("Usage: l6claw-cli send [options]");
   console.log("");
-  console.log("Send a message to a thread, triggering the agent to act.");
+  console.log("Send a message through the dedicated remote agent API.");
   console.log("");
   console.log("Options:");
-  console.log("  --url <url>          WebSocket URL. Overrides T3CODE_URL.");
-  console.log("  --token <token>      Auth token. Overrides T3CODE_TOKEN.");
+  console.log("  --url <url>          Remote API WebSocket URL. Overrides L6CLAW_REMOTE_URL.");
+  console.log("  --token <token>      Remote API token. Overrides L6CLAW_REMOTE_TOKEN.");
   console.log("  --thread-id <id>     Target thread by ID.");
   console.log("  --project <name>     Target project by name (case-insensitive).");
   console.log("  --thread <title>     Target thread title (case-insensitive, requires --project).");
   console.log("  --text <message>     Message text to send (required).");
   console.log("  --sender <name>      Sender identity shown in the UI, max 32 chars (required).");
   console.log("  --no-wait            Dispatch and exit without waiting for the agent to finish.");
-  console.log("  --timeout <seconds>  Max wait time in seconds (default: 86400).");
   console.log("  --help               Show this help message.");
   process.exit(0);
 }
 
-// ── Command entry point ─────────────────────────────────────────────────
+function resolveTarget(flags: Record<string, string | true>): RemoteThreadTarget {
+  const threadId = typeof flags["thread-id"] === "string" ? flags["thread-id"] : null;
+  if (threadId) {
+    return { threadId: ThreadId.makeUnsafe(threadId) };
+  }
+
+  const projectName = typeof flags.project === "string" ? flags.project : null;
+  const threadTitle = typeof flags.thread === "string" ? flags.thread : null;
+  if (!projectName || !threadTitle) {
+    console.error("Either --thread-id or both --project and --thread are required.");
+    process.exit(1);
+  }
+
+  return { projectName, threadTitle };
+}
 
 export const runSend = (flags: Record<string, string | true>) => {
   if (flags.help === true) printHelp();
 
-  const url = (typeof flags.url === "string" ? flags.url : undefined) ?? process.env["T3CODE_URL"];
+  const url =
+    (typeof flags.url === "string" ? flags.url : undefined) ??
+    process.env["L6CLAW_REMOTE_URL"] ??
+    process.env["T3CODE_URL"];
   const token =
-    (typeof flags.token === "string" ? flags.token : undefined) ?? process.env["T3CODE_TOKEN"];
-
+    (typeof flags.token === "string" ? flags.token : undefined) ??
+    process.env["L6CLAW_REMOTE_TOKEN"] ??
+    process.env["T3CODE_TOKEN"];
   if (!url || !token) {
-    console.error("Error: --url / T3CODE_URL and --token / T3CODE_TOKEN are required.");
+    console.error(
+      "Error: --url / L6CLAW_REMOTE_URL and --token / L6CLAW_REMOTE_TOKEN are required.",
+    );
     process.exit(1);
   }
 
@@ -200,96 +66,157 @@ export const runSend = (flags: Record<string, string | true>) => {
     console.error("Error: --text and --sender are required.");
     process.exit(1);
   }
+  const senderName = sender.slice(0, 32);
 
-  const threadIdOpt = typeof flags["thread-id"] === "string" ? flags["thread-id"] : null;
-  const projectOpt = typeof flags.project === "string" ? flags.project : null;
-  const threadOpt = typeof flags.thread === "string" ? flags.thread : null;
+  const target = resolveTarget(flags);
   const isWait = flags["no-wait"] !== true;
-  const timeoutSec =
-    typeof flags.timeout === "string" ? Math.max(1, parseInt(flags.timeout, 10) || 86400) : 86400;
 
   return Effect.gen(function* () {
-    const client = yield* RpcClient.make(WsRpcGroup);
+    const client = yield* RpcClient.make(RemoteApiRpcGroup);
 
-    // Resolve thread from snapshot
-    const snapshot = yield* client[ORCHESTRATION_WS_METHODS.getSnapshot]({});
-    const resolved = resolveThread(snapshot, {
-      threadId: threadIdOpt,
-      project: projectOpt,
-      thread: threadOpt,
-    });
-
-    const command = {
-      type: "thread.turn.start" as const,
-      commandId: CommandId.makeUnsafe(crypto.randomUUID()),
-      threadId: resolved.threadId,
-      message: {
-        messageId: MessageId.makeUnsafe(crypto.randomUUID()),
-        role: "user" as const,
+    if (!isWait) {
+      const accepted = yield* client[REMOTE_API_METHODS.threadSend]({
+        target,
         text,
-        sender: sender.slice(0, 32),
-        attachments: [] as never[],
-      },
-      runtimeMode: resolved.runtimeMode,
-      interactionMode: "default" as const,
-      createdAt: new Date().toISOString(),
-    };
+        sender: senderName,
+      });
+      console.log(JSON.stringify(accepted));
+      return;
+    }
 
-    if (isWait) {
-      // --- Wait mode: subscribe to events, dispatch, wait for completion ---
-      const stateRef = yield* Ref.make<WaitState>(INITIAL_WAIT_STATE);
-      const doneDef = yield* Deferred.make<void>();
+    const steerQueue = yield* Queue.unbounded<string>();
+    let stdinBuffer = "";
+    let interactionReady = false;
+    const interactionIdDeferred = yield* Deferred.make<string>();
+    let assistantLineOpen = false;
+    let exitCode = 0;
 
-      // Fork event stream consumer BEFORE dispatching (avoids race)
-      const eventConsumer = client[WS_METHODS.subscribeOrchestrationDomainEvents]({}).pipe(
-        Stream.runForEach((event: OrchestrationEvent) =>
-          Effect.gen(function* () {
-            const current = yield* Ref.get(stateRef);
-            if (current.status !== "running") return;
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        process.stdin.setEncoding("utf8");
+        process.stdin.resume();
 
-            const next = processEvent(current, event, resolved.threadId);
-            yield* Ref.set(stateRef, next);
-            if (next.status !== "running") {
-              yield* Deferred.succeed(doneDef, void 0);
+        const onData = (chunk: string) => {
+          stdinBuffer += chunk;
+          while (true) {
+            const newlineIndex = stdinBuffer.indexOf("\n");
+            if (newlineIndex === -1) {
+              break;
             }
-          }),
-        ),
-      );
+            const line = stdinBuffer.slice(0, newlineIndex).replace(/\r$/, "");
+            stdinBuffer = stdinBuffer.slice(newlineIndex + 1);
+            if (line.trim().length === 0) {
+              continue;
+            }
+            void Effect.runFork(Queue.offer(steerQueue, line));
+          }
+        };
 
-      const fiber = yield* eventConsumer.pipe(Effect.forkChild({ startImmediately: true }));
-
-      // Dispatch the turn-start command
-      yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command);
-
-      // Wait for completion or timeout
-      yield* Deferred.await(doneDef).pipe(
-        Effect.timeoutOrElse({
-          duration: Duration.seconds(timeoutSec),
-          orElse: () => Ref.update(stateRef, (s) => ({ ...s, status: "timeout" as TurnStatus })),
+        process.stdin.on("data", onData);
+        return onData;
+      }),
+      (onData) =>
+        Effect.sync(() => {
+          process.stdin.off("data", onData);
+          process.stdin.pause();
         }),
-      );
+    );
 
-      yield* Fiber.interrupt(fiber);
+    yield* Queue.take(steerQueue).pipe(
+      Effect.flatMap((steerText) =>
+        Effect.gen(function* () {
+          const activeInteractionId = yield* Deferred.await(interactionIdDeferred);
+          yield* client[REMOTE_API_METHODS.threadSteer]({
+            interactionId: activeInteractionId,
+            text: steerText,
+            sender: senderName,
+          }).pipe(
+            Effect.catchCause((cause: Cause.Cause<unknown>) =>
+              Effect.sync(() => {
+                const err = Cause.squash(cause);
+                console.error(
+                  `Steering error: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }),
+            ),
+          );
+        }),
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    );
 
-      const result = yield* Ref.get(stateRef);
+    yield* client[REMOTE_API_METHODS.threadSendAndStream]({
+      target,
+      text,
+      sender: senderName,
+    }).pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          switch (event.type) {
+            case "started":
+              if (!interactionReady) {
+                interactionReady = true;
+                yield* Deferred.succeed(interactionIdDeferred, event.interactionId);
+              }
+              break;
+            case "assistant_message_delta":
+              process.stdout.write(event.textDelta);
+              assistantLineOpen = !event.textDelta.endsWith("\n");
+              break;
+            case "assistant_message_completed":
+              if (assistantLineOpen) {
+                process.stdout.write("\n");
+              }
+              assistantLineOpen = false;
+              break;
+            case "completed":
+              if (assistantLineOpen) {
+                process.stdout.write("\n");
+                assistantLineOpen = false;
+              }
+              exitCode = 0;
+              break;
+            case "interrupted":
+              if (assistantLineOpen) {
+                process.stdout.write("\n");
+                assistantLineOpen = false;
+              }
+              console.error(
+                JSON.stringify({
+                  status: "interrupted",
+                  interactionId: event.interactionId,
+                  turnId: event.turnId,
+                }),
+              );
+              exitCode = 1;
+              break;
+            case "error":
+              if (assistantLineOpen) {
+                process.stdout.write("\n");
+                assistantLineOpen = false;
+              }
+              console.error(
+                JSON.stringify({
+                  status: "error",
+                  interactionId: event.interactionId,
+                  code: event.code,
+                  message: event.message,
+                }),
+              );
+              exitCode = 1;
+              break;
+          }
+        }),
+      ),
+    );
 
-      // Print collected assistant messages
-      for (const msg of result.messages) {
-        console.log(msg);
-      }
-
-      if (result.status !== "completed") {
-        console.error(JSON.stringify({ status: result.status, turnId: result.turnId }));
-        process.exit(1);
-      }
-    } else {
-      // --- Fire-and-forget mode ---
-      yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command);
-      console.log(JSON.stringify({ status: "accepted", turnId: null }));
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
   }).pipe(
     Effect.provide(makeRpcLayer(url, token)),
-    Effect.catchCause((cause) =>
+    Effect.catchCause((cause: Cause.Cause<unknown>) =>
       Effect.sync(() => {
         const err = Cause.squash(cause);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
