@@ -29,7 +29,9 @@ If `BROWSER_AGENT_URL` is a bare LM Studio host, the wrapper normalizes it to in
 
 - In one-shot mode, the process exits after the initial prompt finishes.
 - In `--interactive` mode, follow-up turns are sent on `stdin`.
-- Each turn ends with a line containing only `<<EOF>>`.
+- Every message sent to the browser agent must be suffixed with a line containing only `<<EOF>>`.
+- After sending a turn, wait for the browser agent to emit its own standalone `<<EOF>>` line before sending the next turn.
+- Treat that returned `<<EOF>>` as the end-of-turn marker for the browser agent's response stream.
 - Output is line-oriented with `AGENT:`, `INFO:`, and `ERROR:` prefixes.
 
 ## Logging
