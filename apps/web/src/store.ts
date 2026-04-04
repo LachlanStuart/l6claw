@@ -163,6 +163,7 @@ function mapThread(thread: OrchestrationThread): Thread {
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
+    remoteAccess: thread.remoteAccess,
     session: thread.session ? mapSession(thread.session) : null,
     messages: thread.messages.map(mapMessage),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
@@ -651,6 +652,7 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
         modelSelection: event.payload.modelSelection,
         runtimeMode: event.payload.runtimeMode,
         interactionMode: event.payload.interactionMode,
+        remoteAccess: event.payload.remoteAccess,
         branch: event.payload.branch,
         worktreePath: event.payload.worktreePath,
         latestTurn: null,
@@ -758,6 +760,14 @@ export function applyOrchestrationEvent(state: AppState, event: OrchestrationEve
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         interactionMode: event.payload.interactionMode,
+        updatedAt: event.payload.updatedAt,
+      }));
+    }
+
+    case "thread.remote-access-set": {
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        remoteAccess: event.payload.remoteAccess,
         updatedAt: event.payload.updatedAt,
       }));
     }

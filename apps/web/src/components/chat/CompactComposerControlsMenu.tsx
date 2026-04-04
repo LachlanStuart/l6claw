@@ -16,8 +16,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   activePlan: boolean;
   interactionMode: ProviderInteractionMode;
   planSidebarOpen: boolean;
+  remoteAccess: boolean;
   runtimeMode: RuntimeMode;
   traitsMenuContent?: ReactNode;
+  onRemoteAccessChange: (remoteAccess: boolean) => void;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
   onToggleRuntimeMode: () => void;
@@ -53,6 +55,20 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         >
           <MenuRadioItem value="default">Chat</MenuRadioItem>
           <MenuRadioItem value="plan">Plan</MenuRadioItem>
+        </MenuRadioGroup>
+        <MenuDivider />
+        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Remote Access</div>
+        <MenuRadioGroup
+          value={props.remoteAccess ? "on" : "off"}
+          onValueChange={(value) => {
+            if (value !== "on" && value !== "off") return;
+            const nextRemoteAccess = value === "on";
+            if (nextRemoteAccess === props.remoteAccess) return;
+            props.onRemoteAccessChange(nextRemoteAccess);
+          }}
+        >
+          <MenuRadioItem value="off">Off</MenuRadioItem>
+          <MenuRadioItem value="on">On</MenuRadioItem>
         </MenuRadioGroup>
         <MenuDivider />
         <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>

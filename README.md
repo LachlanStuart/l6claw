@@ -9,7 +9,7 @@ Eternal gratitude to [Julius Marminge](https://github.com/juliusmarminge), [Theo
 This fork endeavours to add features via self-contained, spec-driven additions. This makes the features easy to copy elsewhere, or reimplement from scratch if upstream changes too much.
 
 - [00 - Fork Setup](.l6-specs/00-fork-setup.md) — Rebranding, fork migration isolation, and development conventions
-- [01 - Remote CLI](.l6-specs/01-remote-cli.md) — CLI tool for remote agents to interact with threads over WebSocket
+- [01 - Remote Agent API](.l6-specs/01-remote-cli.md) — Dedicated remote agent API with per-thread access control and a thin CLI
 - [02 - Browser Agent CLI](.l6-specs/02-browser-agent-cli.md) — Long-lived browser automation REPL backed by a local model endpoint
 
 ---

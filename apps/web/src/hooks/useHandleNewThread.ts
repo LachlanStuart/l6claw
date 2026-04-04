@@ -25,6 +25,7 @@ export function useHandleNewThread() {
   const activeDraftThread = useComposerDraftStore((store) =>
     routeThreadId ? (store.draftThreadsByThreadId[routeThreadId] ?? null) : null,
   );
+  const inheritedRemoteAccess = activeDraftThread?.remoteAccess ?? activeThread?.remoteAccess;
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
       items: projectIds,
@@ -104,6 +105,7 @@ export function useHandleNewThread() {
           worktreePath: options?.worktreePath ?? null,
           envMode: options?.envMode ?? "local",
           runtimeMode: DEFAULT_RUNTIME_MODE,
+          remoteAccess: inheritedRemoteAccess ?? false,
         });
         applyStickyState(threadId);
 
@@ -113,7 +115,7 @@ export function useHandleNewThread() {
         });
       })();
     },
-    [navigate, routeThreadId],
+    [inheritedRemoteAccess, navigate, routeThreadId],
   );
 
   return {
