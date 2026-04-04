@@ -27,6 +27,13 @@ Specs should:
 - Optionally include recommendations for settings file structure and database migrations for data compatibility
 - Avoid referencing specific code unless it directly affects user experience — the purpose is to survive a complete codebase rewrite
 
+When using the `brainstorming` skill in this repo, ignore the parts of that skill that require:
+
+- writing a design doc under `docs/superpowers/specs/...`
+- producing an implementation-oriented design spec that documents architecture/components/data flow/error handling/testing beyond what this repo's `.l6-specs/` convention requires
+
+For this repo, the useful part of the brainstorming skill is exploring options and getting design approval before implementation. The repo's `.l6-specs/` requirements take precedence for documentation.
+
 If a feature already has a spec, the spec must be kept up to date when the feature changes.
 
 ### Spec Diffs
