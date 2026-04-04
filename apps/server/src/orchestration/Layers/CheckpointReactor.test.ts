@@ -334,6 +334,7 @@ describe("CheckpointReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
+        remoteAccess: false,
         branch: null,
         worktreePath: options?.threadWorktreePath ?? cwd,
         createdAt,

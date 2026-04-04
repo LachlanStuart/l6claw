@@ -220,6 +220,7 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           modelSelection: nextProjectDefaultModelSelection,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
+          remoteAccess: false,
           branch: null,
           worktreePath: null,
           createdAt,

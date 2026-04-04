@@ -235,6 +235,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
+    remoteAccess: thread.remoteAccess,
     session: thread.session ? mapSession(thread.session) : null,
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
     proposedPlans: thread.proposedPlans.map(mapProposedPlan),
@@ -1252,6 +1253,7 @@ function applyEnvironmentOrchestrationEvent(
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,
+          remoteAccess: event.payload.remoteAccess,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
           latestTurn: null,
@@ -1314,6 +1316,14 @@ function applyEnvironmentOrchestrationEvent(
         interactionMode: event.payload.interactionMode,
         updatedAt: event.payload.updatedAt,
       }));
+
+    case "thread.remote-access-set": {
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        remoteAccess: event.payload.remoteAccess,
+        updatedAt: event.payload.updatedAt,
+      }));
+    }
 
     case "thread.turn-start-requested":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

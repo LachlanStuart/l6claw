@@ -1,19 +1,19 @@
 /**
- * Effect RPC client layer for the T3 Code WebSocket server.
- * Mirrors the pattern used by the web app and server tests.
+ * Effect RPC client layer for the dedicated remote API WebSocket server.
  */
 import { Layer } from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
-import { WsRpcGroup } from "@t3tools/contracts";
+import { RemoteApiRpcGroup } from "@t3tools/contracts";
 
 /**
- * Build the RPC protocol layer that connects to a T3 Code server.
- * Appends `/ws` and the auth token query parameter to the base URL.
+ * Build the RPC protocol layer that connects to the remote API.
+ * The URL must already include the configured WebSocket path.
  */
 export const makeRpcLayer = (url: string, token: string) => {
   const base = url.replace(/\/+$/, "");
-  const wsUrl = `${base}/ws?token=${encodeURIComponent(token)}`;
+  const separator = base.includes("?") ? "&" : "?";
+  const wsUrl = `${base}${separator}token=${encodeURIComponent(token)}`;
 
   return RpcClient.layerProtocolSocket({ retryTransientErrors: false }).pipe(
     Layer.provide(NodeSocket.layerWebSocket(wsUrl)),
@@ -21,8 +21,8 @@ export const makeRpcLayer = (url: string, token: string) => {
   );
 };
 
-/** Create a typed RPC client for the WsRpcGroup. */
-export const makeRpcClient = RpcClient.make(WsRpcGroup);
+/** Create a typed RPC client for the remote API RPC group. */
+export const makeRpcClient = RpcClient.make(RemoteApiRpcGroup);
 
 type RpcClientFactory = typeof makeRpcClient;
 export type T3RpcClient = RpcClientFactory extends import("effect").Effect.Effect<infer C, any, any>

@@ -13,11 +13,15 @@ import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
 
 import ForkMigration0001 from "./ForkMigrations/001_ProjectionThreadMessageSender.ts";
+import ForkMigration0002 from "./ForkMigrations/002_ProjectionThreadsRemoteAccess.ts";
 
 const FORK_MIGRATIONS_TABLE = "effect_sql_fork_migrations";
 
 // Fork migrations are registered here. Add new entries at the end.
-const forkMigrationEntries = [[1, "ProjectionThreadMessageSender", ForkMigration0001]] as const;
+const forkMigrationEntries = [
+  [1, "ProjectionThreadMessageSender", ForkMigration0001],
+  [2, "ProjectionThreadsRemoteAccess", ForkMigration0002],
+] as const;
 
 export const makeForkMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(

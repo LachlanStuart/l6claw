@@ -111,6 +111,15 @@ export const ServerObservability = Schema.Struct({
 });
 export type ServerObservability = typeof ServerObservability.Type;
 
+export const ServerRemoteApiConfig = Schema.Struct({
+  host: Schema.String,
+  port: Schema.Number,
+  path: Schema.String,
+  url: Schema.String,
+  token: Schema.String,
+});
+export type ServerRemoteApiConfig = typeof ServerRemoteApiConfig.Type;
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -125,6 +134,7 @@ export const ServerConfig = Schema.Struct({
   host: Schema.optional(Schema.String),
   port: Schema.optional(Schema.Number),
   authToken: Schema.optional(Schema.String),
+  remoteApi: Schema.optional(ServerRemoteApiConfig),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 

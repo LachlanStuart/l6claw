@@ -784,6 +784,7 @@ export default function ChatView(props: ChatViewProps) {
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const remoteAccess = activeThread?.remoteAccess ?? false;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const diffOpen = rawSearch.diff === "1";
@@ -1896,6 +1897,51 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       setComposerDraftInteractionMode,
       setDraftThreadContext,
+    ],
+  );
+  const handleRemoteAccessChange = useCallback(
+    async (enabled: boolean) => {
+      if (enabled === remoteAccess) return;
+
+      if (isLocalDraftThread) {
+        setDraftThreadContext(threadId, { remoteAccess: enabled });
+        scheduleComposerFocus();
+        return;
+      }
+
+      if (!serverThread) {
+        return;
+      }
+
+      const api = readNativeApi();
+      if (!api) {
+        return;
+      }
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.remote-access.set",
+          commandId: newCommandId(),
+          threadId,
+          remoteAccess: enabled,
+          createdAt: new Date().toISOString(),
+        });
+        scheduleComposerFocus();
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to update remote access",
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        });
+      }
+    },
+    [
+      isLocalDraftThread,
+      remoteAccess,
+      scheduleComposerFocus,
+      serverThread,
+      setDraftThreadContext,
+      threadId,
     ],
   );
   const toggleInteractionMode = useCallback(() => {
@@ -3091,6 +3137,7 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
+    remoteAccess,
     resetLocalDispatch,
     runtimeMode,
     environmentId,

@@ -1,5 +1,6 @@
 import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import { RpcSerialization } from "effect/unstable/rpc";
 
 import { ServerConfig } from "./config";
 import {
@@ -295,8 +296,10 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     return serverApplicationLayer.pipe(
+      Layer.provideMerge(RemoteApiServerLive),
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(HttpServerLive),
+      Layer.provideMerge(RpcSerialization.layerJson),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(PlatformServicesLive),

@@ -18,6 +18,7 @@ import {
   ThreadCreatedPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
+  ThreadRemoteAccessSetPayload,
   ThreadMetaUpdatedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
@@ -257,6 +258,7 @@ export function projectEvent(
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
+            remoteAccess: payload.remoteAccess,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn: null,
@@ -357,6 +359,22 @@ export function projectEvent(
         })),
       );
 
+    case "thread.remote-access-set":
+      return decodeForEvent(
+        ThreadRemoteAccessSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            remoteAccess: payload.remoteAccess,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
     case "thread.message-sent":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -379,6 +397,7 @@ export function projectEvent(
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
+            sender: payload.sender,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
           },

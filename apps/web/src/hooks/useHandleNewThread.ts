@@ -125,6 +125,7 @@ function useNewThreadState() {
           worktreePath: options?.worktreePath ?? null,
           envMode: options?.envMode ?? "local",
           runtimeMode: DEFAULT_RUNTIME_MODE,
+          remoteAccess: inheritedRemoteAccess ?? false,
         });
         applyStickyState(draftId);
 

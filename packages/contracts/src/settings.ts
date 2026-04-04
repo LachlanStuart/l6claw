@@ -95,6 +95,14 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+export const RemoteApiSettings = Schema.Struct({
+  host: TrimmedString.pipe(Schema.withDecodingDefault(() => "127.0.0.1")),
+  port: Schema.Int.pipe(Schema.withDecodingDefault(() => 3774)),
+  path: TrimmedString.pipe(Schema.withDecodingDefault(() => "/remote/ws")),
+  token: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+});
+export type RemoteApiSettings = typeof RemoteApiSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
@@ -112,6 +120,7 @@ export const ServerSettings = Schema.Struct({
 
   // Auth
   authToken: Schema.optional(Schema.String),
+  remoteApi: RemoteApiSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 
   // Provider specific settings
   providers: Schema.Struct({
@@ -192,6 +201,14 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   authToken: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  remoteApi: Schema.optionalKey(
+    Schema.Struct({
+      host: Schema.optionalKey(Schema.String),
+      port: Schema.optionalKey(Schema.Int),
+      path: Schema.optionalKey(Schema.String),
+      token: Schema.optionalKey(Schema.String),
+    }),
+  ),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),

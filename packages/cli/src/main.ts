@@ -27,7 +27,7 @@ function parseFlags(argv: string[]): Record<string, string | true> {
   return result;
 }
 
-function printUsage(): never {
+function printUsage(exitCode: number): never {
   console.error("Usage: l6claw-cli <command> [options]");
   console.error("");
   console.error("Commands:");
@@ -35,7 +35,7 @@ function printUsage(): never {
   console.error("  send      Send a message to a thread");
   console.error("");
   console.error("Run l6claw-cli <command> --help for command-specific options.");
-  process.exit(1);
+  process.exit(exitCode);
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ const subcommand = process.argv[2];
 const flags = parseFlags(process.argv.slice(3));
 
 if (subcommand === "--help" || subcommand === "-h" || subcommand === undefined) {
-  printUsage();
+  printUsage(subcommand === undefined ? 1 : 0);
 }
 
 const program = (() => {
@@ -55,7 +55,7 @@ const program = (() => {
       return runSend(flags);
     default:
       console.error(`Unknown command: ${subcommand}`);
-      printUsage();
+      printUsage(1);
   }
 })();
 
