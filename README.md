@@ -10,6 +10,7 @@ This fork endeavours to add features via self-contained, spec-driven additions. 
 
 - [00 - Fork Setup](.l6-specs/00-fork-setup.md) — Rebranding, fork migration isolation, and development conventions
 - [01 - Remote CLI](.l6-specs/01-remote-cli.md) — CLI tool for remote agents to interact with threads over WebSocket
+- [02 - Browser Agent CLI](.l6-specs/02-browser-agent-cli.md) — Long-lived browser automation REPL backed by a local model endpoint
 
 ---
 
