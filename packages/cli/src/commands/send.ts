@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Queue, Stream } from "effect";
+import { Cause, Deferred, Effect, Fiber, Queue, Stream } from "effect";
 import { RpcClient } from "effect/unstable/rpc";
 import {
   REMOTE_API_METHODS,
@@ -70,6 +70,9 @@ export const runSend = (flags: Record<string, string | true>) => {
 
   const target = resolveTarget(flags);
   const isWait = flags["no-wait"] !== true;
+  let sawTerminalEvent = false;
+  let sawAssistantMessageCompleted = false;
+  let finalExitCode = 0;
 
   return Effect.gen(function* () {
     const client = yield* RpcClient.make(RemoteApiRpcGroup);
@@ -89,8 +92,6 @@ export const runSend = (flags: Record<string, string | true>) => {
     let interactionReady = false;
     const interactionIdDeferred = yield* Deferred.make<string>();
     let assistantLineOpen = false;
-    let exitCode = 0;
-
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         process.stdin.setEncoding("utf8");
@@ -122,7 +123,7 @@ export const runSend = (flags: Record<string, string | true>) => {
         }),
     );
 
-    yield* Queue.take(steerQueue).pipe(
+    const steeringLoop = Queue.take(steerQueue).pipe(
       Effect.flatMap((steerText) =>
         Effect.gen(function* () {
           const activeInteractionId = yield* Deferred.await(interactionIdDeferred);
@@ -143,7 +144,11 @@ export const runSend = (flags: Record<string, string | true>) => {
         }),
       ),
       Effect.forever,
-      Effect.forkScoped,
+    );
+
+    yield* Effect.acquireRelease(
+      Effect.sync(() => Effect.runFork(steeringLoop)),
+      (fiber) => Fiber.interrupt(fiber).pipe(Effect.ignore),
     );
 
     yield* client[REMOTE_API_METHODS.threadSendAndStream]({
@@ -169,13 +174,15 @@ export const runSend = (flags: Record<string, string | true>) => {
                 process.stdout.write("\n");
               }
               assistantLineOpen = false;
+              sawAssistantMessageCompleted = true;
               break;
             case "completed":
               if (assistantLineOpen) {
                 process.stdout.write("\n");
                 assistantLineOpen = false;
               }
-              exitCode = 0;
+              sawTerminalEvent = true;
+              finalExitCode = 0;
               break;
             case "interrupted":
               if (assistantLineOpen) {
@@ -189,7 +196,8 @@ export const runSend = (flags: Record<string, string | true>) => {
                   turnId: event.turnId,
                 }),
               );
-              exitCode = 1;
+              sawTerminalEvent = true;
+              finalExitCode = 1;
               break;
             case "error":
               if (assistantLineOpen) {
@@ -204,20 +212,27 @@ export const runSend = (flags: Record<string, string | true>) => {
                   message: event.message,
                 }),
               );
-              exitCode = 1;
+              sawTerminalEvent = true;
+              finalExitCode = 1;
               break;
           }
         }),
       ),
     );
 
-    if (exitCode !== 0) {
-      process.exit(exitCode);
+    if (finalExitCode !== 0) {
+      process.exit(finalExitCode);
     }
   }).pipe(
     Effect.provide(makeRpcLayer(url, token)),
     Effect.catchCause((cause: Cause.Cause<unknown>) =>
       Effect.sync(() => {
+        if (Cause.hasInterruptsOnly(cause) && (sawTerminalEvent || sawAssistantMessageCompleted)) {
+          if (finalExitCode !== 0) {
+            process.exit(finalExitCode);
+          }
+          return;
+        }
         const err = Cause.squash(cause);
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);

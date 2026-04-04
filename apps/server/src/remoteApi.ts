@@ -70,6 +70,10 @@ function mapDispatchError(message: string) {
   return () => remoteApiError("dispatch_failed", message);
 }
 
+function isTerminalRemoteEvent(event: RemoteAssistantStreamEvent): boolean {
+  return event.type === "completed" || event.type === "error" || event.type === "interrupted";
+}
+
 function resolveThreadFromTarget(
   readModel: OrchestrationReadModel,
   target: RemoteThreadTarget,
@@ -163,12 +167,7 @@ const RemoteInteractionRegistryLive = Layer.effect(
 
     return {
       startInteraction: (threadId) =>
-        Ref.modify(stateRef, (state): [RemoteInteractionRecord | null, RemoteInteractionState] => {
-          const activeInteractionId = state.activeByThreadId.get(threadId);
-          if (activeInteractionId) {
-            return [null, state];
-          }
-
+        Ref.modify(stateRef, (state): [RemoteInteractionRecord, RemoteInteractionState] => {
           const interactionId = crypto.randomUUID();
           const record: RemoteInteractionRecord = {
             interactionId,
@@ -177,6 +176,16 @@ const RemoteInteractionRegistryLive = Layer.effect(
             active: true,
           };
           const nextByInteractionId = new Map(state.byInteractionId);
+          const previousInteractionId = state.activeByThreadId.get(threadId);
+          if (previousInteractionId) {
+            const previous = nextByInteractionId.get(previousInteractionId);
+            if (previous) {
+              nextByInteractionId.set(previousInteractionId, {
+                ...previous,
+                active: false,
+              });
+            }
+          }
           nextByInteractionId.set(interactionId, record);
           const nextActiveByThreadId = new Map(state.activeByThreadId);
           nextActiveByThreadId.set(threadId, interactionId);
@@ -187,24 +196,16 @@ const RemoteInteractionRegistryLive = Layer.effect(
               activeByThreadId: nextActiveByThreadId,
             },
           ];
-        }).pipe(
-          Effect.flatMap((record) =>
-            record
-              ? Effect.succeed(record)
-              : Effect.fail(
-                  remoteApiError(
-                    "thread_busy",
-                    "The requested thread already has an active remote interaction.",
-                  ),
-                ),
-          ),
-        ),
+        }),
       abortInteraction: (interactionId) => deactivateInteraction(interactionId),
       getActiveInteraction: (interactionId) =>
         Ref.get(stateRef).pipe(
           Effect.flatMap((state) => {
             const interaction = state.byInteractionId.get(interactionId);
-            if (!interaction || !interaction.active) {
+            const activeInteractionId = interaction
+              ? state.activeByThreadId.get(interaction.threadId)
+              : undefined;
+            if (!interaction || !interaction.active || activeInteractionId !== interactionId) {
               return Effect.fail(
                 remoteApiError(
                   "interaction_not_active",
@@ -475,7 +476,6 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
                           threadId: thread.id,
                           turnId: yield* Ref.get(turnIdRef),
                         });
-                        yield* Queue.shutdown(queue);
                         return;
                       }
                       if (event.payload.session.status === "error") {
@@ -486,7 +486,6 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
                           code: "session_error",
                           message: event.payload.session.lastError ?? "Remote interaction failed.",
                         });
-                        yield* Queue.shutdown(queue);
                       }
                       return;
                     }
@@ -542,7 +541,7 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
                               : "The remote interaction failed.",
                         });
                       }
-                      yield* Queue.shutdown(queue);
+                      return;
                     }
                   }
                 }),
@@ -565,7 +564,10 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
               Effect.mapError(mapDispatchError("Failed to start the remote interaction.")),
             );
 
-            return Stream.fromQueue(queue).pipe(Stream.onExit(() => Fiber.interrupt(fiber)));
+            return Stream.fromQueue(queue).pipe(
+              Stream.takeUntil(isTerminalRemoteEvent),
+              Stream.onExit(() => Fiber.interrupt(fiber)),
+            );
           }),
           { "rpc.aggregate": "remote" },
         ),

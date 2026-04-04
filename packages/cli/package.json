@@ -6,6 +6,7 @@
   },
   "type": "module",
   "scripts": {
+    "start": "bun run src/main.ts",
     "build": "bun build --compile src/main.ts --outfile dist/l6claw-cli",
     "dev": "bun run src/main.ts",
     "typecheck": "tsc --noEmit"
