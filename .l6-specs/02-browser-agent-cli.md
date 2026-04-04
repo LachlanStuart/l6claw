@@ -36,17 +36,20 @@ This binary name is part of the feature contract so other tools can invoke it pr
 The public command-line interface is:
 
 ```bash
-l6claw-browser-agent [--headless | --profile] ["<initial prompt>"]
+l6claw-browser-agent [--headless | --profile] [--interactive] "<initial prompt>"
 ```
 
 Rules:
 
 - `--headless` starts a headless ephemeral browser session
 - `--profile` starts a visible session using the machine's default browser profile
+- `--interactive` keeps the process alive after the initial prompt and enables follow-up turns over standard input
 - if neither flag is provided, the CLI starts a visible ephemeral browser session
 - `--headless` and `--profile` are mutually exclusive
 - after any flags, the positional argument is the initial prompt for the browser agent
-- the initial prompt is optional; if provided, it is executed as the first turn before the REPL begins reading additional turns from standard input
+- the initial prompt is required
+- without `--interactive`, the CLI executes the initial prompt, emits `<<EOF>>`, and exits
+- with `--interactive`, the initial prompt is executed as turn 1 before the REPL begins reading additional turns from standard input
 
 Example:
 
@@ -94,7 +97,7 @@ Mode is chosen when the process starts and does not change at runtime.
 
 ## REPL Contract
 
-The CLI behaves as a plain-text REPL over standard input and standard output.
+The CLI behaves as a plain-text REPL over standard input and standard output only when `--interactive` is provided.
 
 ### Input
 
@@ -105,7 +108,7 @@ The CLI behaves as a plain-text REPL over standard input and standard output.
 
 This delimiter is part of the subprocess contract so L6 Claw can send long natural-language instructions safely.
 
-If an initial prompt was provided on the command line, it is processed as turn 1. Subsequent turns are read from standard input using the same `<<EOF>>` framing.
+The required initial prompt on the command line is always processed as turn 1. In interactive mode, subsequent turns are read from standard input using the same `<<EOF>>` framing.
 
 ### Output
 
@@ -128,7 +131,7 @@ When a request is fully complete, the CLI emits a line containing only `<<EOF>>`
 The browser session is process-scoped:
 
 - starting the CLI starts a session
-- subsequent prompts reuse that same session
+- in interactive mode, subsequent prompts reuse that same session
 - cookies, logged-in state, open tabs, and navigation context persist across prompts while the process remains alive
 - ending the process ends the browser session
 
@@ -150,7 +153,7 @@ Automatic hidden recovery from browser crashes is not part of this feature in v1
 
 ## Intended Use From L6 Claw
 
-L6 Claw launches the CLI as a long-lived subprocess and communicates with it as a chat-like tool rather than a structured RPC server.
+L6 Claw can launch the CLI either as a one-shot subprocess for a single browser task or, with `--interactive`, as a long-lived subprocess for chat-like browser work rather than a structured RPC server.
 
 The important compatibility points are:
 
@@ -167,7 +170,7 @@ The important compatibility points are:
 Example startup:
 
 ```bash
-l6claw-browser-agent "Open Google Maps and search for coffee near Alexanderplatz Berlin"
+l6claw-browser-agent --interactive "Open Google Maps and search for coffee near Alexanderplatz Berlin"
 ```
 
 Example output for the initial prompt:
