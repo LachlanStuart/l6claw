@@ -14,16 +14,15 @@ Use `tools/browser-agent/` when a task should be executed in a real browser thro
 - Command: `uv run l6claw-browser-agent`
 - One-shot default: `uv run l6claw-browser-agent "Open example.com and summarize the page"`
 - Interactive mode: `uv run l6claw-browser-agent --interactive "Open example.com and await further instructions"`
-- Headless mode: add `--headless`
+- Headless mode: add `--headless` only when the user explicitly asks for it
 - Default profile mode: add `--profile`
+- The browser agent can be slow on real sites; wait for its own `<<EOF>>` turn marker before assuming a request has stalled.
 
-## Required Environment
+## Environment
 
-- `BROWSER_AGENT_API_KEY`
-- `BROWSER_AGENT_URL`
-- `BROWSER_AGENT_MODEL`
-
-If `BROWSER_AGENT_URL` is a bare LM Studio host, the wrapper normalizes it to include `/v1`.
+- The browser-agent runtime expects `BROWSER_AGENT_API_KEY`, `BROWSER_AGENT_URL`, and `BROWSER_AGENT_MODEL` to already be available in the environment that launches it.
+- Do not manually re-export or restate those values in prompts unless the runtime is actually missing them.
+- If `BROWSER_AGENT_URL` is a bare LM Studio host, the wrapper normalizes it to include `/v1`.
 
 ## Interactive Protocol
 
