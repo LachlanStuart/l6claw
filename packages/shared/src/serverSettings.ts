@@ -46,6 +46,19 @@ function shouldReplaceTextGenerationModelSelection(
   return Boolean(patch && (patch.provider !== undefined || patch.model !== undefined));
 }
 
+type MergedServerSettings = Omit<ServerSettings, "authToken"> & {
+  readonly authToken?: string | null | undefined;
+};
+
+function normalizeMergedServerSettings(settings: MergedServerSettings): ServerSettings {
+  if (settings.authToken === null) {
+    const { authToken: _authToken, ...next } = settings;
+    return next;
+  }
+
+  return settings as ServerSettings;
+}
+
 /**
  * Applies a server settings patch while treating textGenerationModelSelection as
  * replace-on-provider/model updates. This prevents stale nested options from
@@ -56,17 +69,18 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
-  const next = deepMerge(current, patch);
+  const merged = deepMerge<MergedServerSettings>(current, patch);
+  const next = normalizeMergedServerSettings(merged);
   if (!selectionPatch || !shouldReplaceTextGenerationModelSelection(selectionPatch)) {
     return next;
   }
 
-  return {
+  return normalizeMergedServerSettings({
     ...next,
     textGenerationModelSelection: {
       provider: selectionPatch.provider ?? current.textGenerationModelSelection.provider,
       model: selectionPatch.model ?? current.textGenerationModelSelection.model,
       ...(selectionPatch.options ? { options: selectionPatch.options } : {}),
     },
-  };
+  });
 }

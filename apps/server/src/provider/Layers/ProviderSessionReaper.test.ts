@@ -81,6 +81,7 @@ function makeReadModel(
       modelSelection: defaultModelSelection,
       interactionMode: "default" as const,
       runtimeMode: "full-access" as const,
+      remoteAccess: false,
       branch: null,
       worktreePath: null,
       createdAt: now,

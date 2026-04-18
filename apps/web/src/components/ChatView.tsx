@@ -1904,7 +1904,7 @@ export default function ChatView(props: ChatViewProps) {
       if (enabled === remoteAccess) return;
 
       if (isLocalDraftThread) {
-        setDraftThreadContext(threadId, { remoteAccess: enabled });
+        setDraftThreadContext(composerDraftTarget, { remoteAccess: enabled });
         scheduleComposerFocus();
         return;
       }
@@ -1913,7 +1913,7 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
-      const api = readNativeApi();
+      const api = readEnvironmentApi(environmentId);
       if (!api) {
         return;
       }
@@ -1936,6 +1936,8 @@ export default function ChatView(props: ChatViewProps) {
       }
     },
     [
+      composerDraftTarget,
+      environmentId,
       isLocalDraftThread,
       remoteAccess,
       scheduleComposerFocus,
@@ -3071,6 +3073,7 @@ export default function ChatView(props: ChatViewProps) {
         modelSelection: nextThreadModelSelection,
         runtimeMode,
         interactionMode: "default",
+        remoteAccess,
         branch: activeThreadBranch,
         worktreePath: activeThread.worktreePath,
         createdAt,
@@ -3137,8 +3140,8 @@ export default function ChatView(props: ChatViewProps) {
     isSendBusy,
     isServerThread,
     navigate,
-    remoteAccess,
     resetLocalDispatch,
+    remoteAccess,
     runtimeMode,
     environmentId,
   ]);
@@ -3380,6 +3383,7 @@ export default function ChatView(props: ChatViewProps) {
               planSidebarOpen={planSidebarOpen}
               runtimeMode={runtimeMode}
               interactionMode={interactionMode}
+              remoteAccess={remoteAccess}
               lockedProvider={lockedProvider}
               providerStatuses={providerStatuses as ServerProvider[]}
               activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
@@ -3407,6 +3411,7 @@ export default function ChatView(props: ChatViewProps) {
               toggleInteractionMode={toggleInteractionMode}
               handleRuntimeModeChange={handleRuntimeModeChange}
               handleInteractionModeChange={handleInteractionModeChange}
+              onRemoteAccessChange={handleRemoteAccessChange}
               togglePlanSidebar={togglePlanSidebar}
               focusComposer={focusComposer}
               scheduleComposerFocus={scheduleComposerFocus}

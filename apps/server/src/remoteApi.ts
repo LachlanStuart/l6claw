@@ -294,10 +294,10 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
     }) =>
       orchestrationEngine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.make(crypto.randomUUID()),
         threadId: input.thread.id,
         message: {
-          messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+          messageId: MessageId.make(crypto.randomUUID()),
           role: "user",
           text: input.text,
           sender: input.sender.slice(0, 32),

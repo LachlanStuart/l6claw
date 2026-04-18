@@ -36,6 +36,10 @@ function toProjectionThread(row: ProjectionThreadDbRow): ProjectionThread {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     archivedAt: row.archivedAt,
+    latestUserMessageAt: row.latestUserMessageAt,
+    pendingApprovalCount: row.pendingApprovalCount,
+    pendingUserInputCount: row.pendingUserInputCount,
+    hasActionableProposedPlan: row.hasActionableProposedPlan,
     deletedAt: row.deletedAt,
   };
 }

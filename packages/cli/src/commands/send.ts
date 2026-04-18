@@ -29,7 +29,7 @@ function printHelp() {
 function resolveTarget(flags: Record<string, string | true>): RemoteThreadTarget {
   const threadId = typeof flags["thread-id"] === "string" ? flags["thread-id"] : null;
   if (threadId) {
-    return { threadId: ThreadId.makeUnsafe(threadId) };
+    return { threadId: ThreadId.make(threadId) };
   }
 
   const projectName = typeof flags.project === "string" ? flags.project : null;

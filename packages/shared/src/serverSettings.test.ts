@@ -109,4 +109,13 @@ describe("serverSettings helpers", () => {
       },
     });
   });
+
+  it("treats authToken null in patches as clearing the stored token", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      authToken: "secret-token",
+    };
+
+    expect(applyServerSettingsPatch(current, { authToken: null }).authToken).toBeUndefined();
+  });
 });
