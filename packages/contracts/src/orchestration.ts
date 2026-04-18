@@ -166,7 +166,7 @@ export const OrchestrationMessage = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
-  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -285,7 +285,7 @@ export const OrchestrationThread = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
-  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -436,7 +436,7 @@ const ThreadCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
-  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -793,7 +793,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
-  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
@@ -853,7 +853,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
-  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+  sender: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });

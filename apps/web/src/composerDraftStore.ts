@@ -22,6 +22,7 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime";
+import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as Equal from "effect/Equal";
 import { DeepMutable } from "effect/Types";
@@ -159,7 +160,7 @@ const PersistedDraftThreadState = Schema.Struct({
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
