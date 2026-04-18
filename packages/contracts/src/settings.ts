@@ -96,10 +96,10 @@ export const ObservabilitySettings = Schema.Struct({
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
 export const RemoteApiSettings = Schema.Struct({
-  host: TrimmedString.pipe(Schema.withDecodingDefault(() => "127.0.0.1")),
-  port: Schema.Int.pipe(Schema.withDecodingDefault(() => 3774)),
-  path: TrimmedString.pipe(Schema.withDecodingDefault(() => "/remote/ws")),
-  token: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  host: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("127.0.0.1"))),
+  port: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(3774))),
+  path: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed("/remote/ws"))),
+  token: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 });
 export type RemoteApiSettings = typeof RemoteApiSettings.Type;
 
@@ -120,7 +120,7 @@ export const ServerSettings = Schema.Struct({
 
   // Auth
   authToken: Schema.optional(Schema.String),
-  remoteApi: RemoteApiSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  remoteApi: RemoteApiSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   // Provider specific settings
   providers: Schema.Struct({

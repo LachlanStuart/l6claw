@@ -164,6 +164,8 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showPlanToggle: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
+  remoteAccess: boolean;
+  onRemoteAccessChange: (remoteAccess: boolean) => void;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   onTogglePlanSidebar: () => void;
@@ -192,6 +194,32 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           {props.interactionMode === "plan" ? "Plan" : "Build"}
         </span>
       </Button>
+
+      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+
+      <Select
+        value={props.remoteAccess ? "on" : "off"}
+        onValueChange={(value) => {
+          if (value !== "on" && value !== "off") return;
+          const nextRemoteAccess = value === "on";
+          if (nextRemoteAccess === props.remoteAccess) return;
+          props.onRemoteAccessChange(nextRemoteAccess);
+        }}
+      >
+        <SelectTrigger
+          variant="ghost"
+          size="sm"
+          className="font-medium"
+          aria-label="Remote access"
+          title="Allow remote access for this thread"
+        >
+          <SelectValue>{props.remoteAccess ? "Remote on" : "Remote off"}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup alignItemWithTrigger={false}>
+          <SelectItem value="off">Remote off</SelectItem>
+          <SelectItem value="on">Remote on</SelectItem>
+        </SelectPopup>
+      </Select>
 
       <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
 
@@ -391,6 +419,7 @@ export interface ChatComposerProps {
   // Mode
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  remoteAccess: boolean;
 
   // Provider / model
   lockedProvider: ProviderKind | null;
@@ -438,6 +467,7 @@ export interface ChatComposerProps {
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
+  onRemoteAccessChange: (remoteAccess: boolean) => void;
   togglePlanSidebar: () => void;
 
   focusComposer: () => void;
@@ -484,6 +514,7 @@ export const ChatComposer = memo(
       planSidebarOpen,
       runtimeMode,
       interactionMode,
+      remoteAccess,
       lockedProvider,
       providerStatuses,
       activeProjectDefaultModelSelection,
@@ -509,6 +540,7 @@ export const ChatComposer = memo(
       toggleInteractionMode,
       handleRuntimeModeChange,
       handleInteractionModeChange,
+      onRemoteAccessChange,
       togglePlanSidebar,
       focusComposer,
       scheduleComposerFocus,
@@ -1932,8 +1964,10 @@ export const ChatComposer = memo(
                       interactionMode={interactionMode}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
+                      remoteAccess={remoteAccess}
                       runtimeMode={runtimeMode}
                       traitsMenuContent={providerTraitsMenuContent}
+                      onRemoteAccessChange={onRemoteAccessChange}
                       onToggleInteractionMode={toggleInteractionMode}
                       onTogglePlanSidebar={togglePlanSidebar}
                       onRuntimeModeChange={handleRuntimeModeChange}
@@ -1955,6 +1989,8 @@ export const ChatComposer = memo(
                         showPlanToggle={showPlanSidebarToggle}
                         planSidebarLabel={planSidebarLabel}
                         planSidebarOpen={planSidebarOpen}
+                        remoteAccess={remoteAccess}
+                        onRemoteAccessChange={onRemoteAccessChange}
                         onToggleInteractionMode={toggleInteractionMode}
                         onRuntimeModeChange={handleRuntimeModeChange}
                         onTogglePlanSidebar={togglePlanSidebar}

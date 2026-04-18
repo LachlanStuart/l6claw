@@ -12,7 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Effect, Fiber, Layer, Option, Queue, Ref, Stream, ServiceMap } from "effect";
+import { Cause, Context, Effect, Fiber, Layer, Option, Queue, Ref, Stream } from "effect";
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -44,7 +44,7 @@ interface RemoteInteractionRegistryShape {
   readonly observeEvent: (event: OrchestrationEvent) => Effect.Effect<void>;
 }
 
-class RemoteInteractionRegistry extends ServiceMap.Service<
+class RemoteInteractionRegistry extends Context.Service<
   RemoteInteractionRegistry,
   RemoteInteractionRegistryShape
 >()("t3/remoteApi/RemoteInteractionRegistry") {}
@@ -294,10 +294,10 @@ const RemoteApiRpcLayer = RemoteApiRpcGroup.toLayer(
     }) =>
       orchestrationEngine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        commandId: CommandId.make(crypto.randomUUID()),
         threadId: input.thread.id,
         message: {
-          messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+          messageId: MessageId.make(crypto.randomUUID()),
           role: "user",
           text: input.text,
           sender: input.sender.slice(0, 32),
@@ -627,7 +627,7 @@ const RemoteApiHttpServerLive = Layer.unwrap(
   }),
 );
 
-export const RemoteApiServerLive = Layer.unwrap(
+const RemoteApiServerLayerLive = Layer.unwrap(
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
     const settings = yield* serverSettings.getSettings;
@@ -674,6 +674,26 @@ export const RemoteApiServerLive = Layer.unwrap(
         return yield* rpcWebSocketHttpEffect;
       }),
     ).pipe(Layer.provide(RemoteApiHttpServerLive));
+  }),
+);
+
+export const RemoteApiServerLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const serverSettings = yield* ServerSettingsService;
+    const settings = yield* serverSettings.getSettings;
+    const remoteApiConfig = resolveRemoteApiRuntimeConfig(settings);
+
+    yield* Layer.launch(RemoteApiServerLayerLive).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("remote API server unavailable; continuing without remote access", {
+          host: remoteApiConfig.host,
+          port: remoteApiConfig.port,
+          path: remoteApiConfig.path,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+      Effect.forkScoped,
+    );
   }),
 );
 

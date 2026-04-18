@@ -22,6 +22,7 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime";
+import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as Equal from "effect/Equal";
 import { DeepMutable } from "effect/Types";
@@ -159,7 +160,7 @@ const PersistedDraftThreadState = Schema.Struct({
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  remoteAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
@@ -1002,6 +1003,7 @@ function createDraftThreadState(
     envMode?: DraftThreadEnvMode;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
+    remoteAccess?: boolean;
   },
 ): DraftThreadState {
   const projectChanged =
@@ -1029,6 +1031,7 @@ function createDraftThreadState(
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
+    remoteAccess: options?.remoteAccess ?? existingThread?.remoteAccess ?? false,
     branch: nextBranch,
     worktreePath: nextWorktreePath,
     envMode:
@@ -1252,6 +1255,7 @@ function normalizePersistedDraftThreads(
           createdAt: new Date().toISOString(),
           runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: DEFAULT_INTERACTION_MODE,
+          remoteAccess: false,
           branch: null,
           worktreePath: null,
           envMode: "local",
@@ -1756,6 +1760,7 @@ function toHydratedDraftThreadState(
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
+    remoteAccess: persistedDraftThread.remoteAccess,
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
@@ -1955,6 +1960,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   : options.createdAt || existing.createdAt,
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
+              remoteAccess: options.remoteAccess ?? existing.remoteAccess,
               branch: nextBranch,
               worktreePath: nextWorktreePath,
               envMode:
@@ -1973,6 +1979,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
+              nextDraftThread.remoteAccess === existing.remoteAccess &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&

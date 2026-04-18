@@ -50,6 +50,7 @@ import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner";
 import { ObservabilityLive } from "./observability/Layers/Observability";
 import { ServerEnvironmentLive } from "./environment/Layers/ServerEnvironment";
+import { RemoteApiServerLive } from "./remoteApi";
 import {
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,

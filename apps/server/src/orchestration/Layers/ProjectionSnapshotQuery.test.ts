@@ -102,6 +102,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           turn_id,
           role,
           text,
+          sender,
           is_streaming,
           created_at,
           updated_at
@@ -112,6 +113,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'turn-1',
           'assistant',
           'hello from projection',
+          'remote-agent',
           0,
           '2026-02-24T00:00:04.000Z',
           '2026-02-24T00:00:05.000Z'
@@ -305,7 +307,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               role: "assistant",
               text: "hello from projection",
               turnId: asTurnId("turn-1"),
-              sender: null,
+              sender: "remote-agent",
               streaming: false,
               createdAt: "2026-02-24T00:00:04.000Z",
               updatedAt: "2026-02-24T00:00:05.000Z",

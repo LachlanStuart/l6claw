@@ -137,6 +137,10 @@ function maxIso(left: string | null, right: string): string {
   return left > right ? left : right;
 }
 
+function decodeSqliteBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === 1n || value === "1";
+}
+
 function computeSnapshotSequence(
   stateRows: ReadonlyArray<Schema.Schema.Type<typeof ProjectionStateDbRowSchema>>,
 ): number {
@@ -518,6 +522,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
+          remote_access AS "remoteAccess",
           branch,
           worktree_path AS "worktreePath",
           latest_turn_id AS "latestTurnId",
@@ -549,6 +554,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
+          sender,
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM projection_thread_messages
@@ -787,6 +793,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
+                  sender: row.sender ?? null,
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -919,6 +926,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 modelSelection: row.modelSelection,
                 runtimeMode: row.runtimeMode,
                 interactionMode: row.interactionMode,
+                remoteAccess: decodeSqliteBoolean(row.remoteAccess),
                 branch: row.branch,
                 worktreePath: row.worktreePath,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -1364,6 +1372,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             role: row.role,
             text: row.text,
             turnId: row.turnId,
+            sender: row.sender ?? null,
             streaming: row.isStreaming === 1,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
