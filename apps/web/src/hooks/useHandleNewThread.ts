@@ -117,6 +117,7 @@ function useNewThreadState() {
       const draftId = newDraftId();
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
+      const inheritedRemoteAccess = latestActiveDraftThread?.remoteAccess ?? false;
       return (async () => {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
