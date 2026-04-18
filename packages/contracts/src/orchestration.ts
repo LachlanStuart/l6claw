@@ -519,7 +519,6 @@ const ThreadRemoteAccessSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,

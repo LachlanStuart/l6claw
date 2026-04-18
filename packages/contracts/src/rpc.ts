@@ -393,7 +393,6 @@ export const RemoteThreadSteerRpc = Rpc.make(REMOTE_API_METHODS.threadSteer, {
   error: RemoteApiError,
 });
 
-
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
