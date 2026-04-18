@@ -393,7 +393,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         staticDir: resolved.staticDir,
         devUrl: undefined,
         noBrowser: true,
-        authToken: undefined,
+        authToken: expect.stringMatching(/^[a-f0-9]{64}$/),
         autoBootstrapProjectFromCwd: false,
         logWebSocketEvents: false,
       });
