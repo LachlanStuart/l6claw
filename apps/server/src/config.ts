@@ -54,6 +54,7 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly staticDir: string | undefined;
   readonly devUrl: URL | undefined;
   readonly noBrowser: boolean;
+  /** Auth token required on WebSocket connections. `undefined` disables auth enforcement entirely. */
   readonly authToken: string | undefined;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
@@ -145,7 +146,7 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
           logWebSocketEvents: false,
           port: 0,
           host: undefined,
-          authToken: undefined,
+          authToken: undefined, // undefined = auth disabled; intentional for tests
           staticDir: undefined,
           devUrl,
           noBrowser: false,
